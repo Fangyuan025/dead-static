@@ -1,0 +1,30 @@
+# Build outputs
+dist/
+build/
+release/
+installer_output/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# Game saves
+dead_static_save.json
+
+# Model files (too large for git)
+*.gguf
+models/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
