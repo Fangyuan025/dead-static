@@ -11,7 +11,7 @@
 
 **A single-player zombie apocalypse text adventure powered by a local LLM.**
 
-**No internet. No cloud. No escape.**
+**No cloud. No API keys. No install. No escape.**
 
 </div>
 
@@ -19,30 +19,28 @@ You wake up in a ransacked apartment. The city outside is dead. You have 15 days
 
 Every playthrough is different. A local language model narrates your story in real time, responding to your choices with procedurally generated prose. The game logic keeps things grounded: combat is dice-and-skill, resources drain every turn, and infection is a slow clock you can't ignore.
 
-Everything runs on your machine. The AI model ships with the game. No API keys, no accounts, no telemetry.
+Everything runs on your machine. The AI engine ([llama.cpp](https://github.com/ggml-org/llama.cpp)) and model (Q4 quantized GGUF, ~1 GB) are bundled with the game or auto-downloaded on first launch. No Python, no drivers, no configuration.
 
 ---
 
 ## Quick Start
 
-### Prerequisites
+### For players (packaged release)
 
-- **Python 3.10+**
-- **[Ollama](https://ollama.com)** installed and running
-- **dolphin-phi** model pulled:
+Double-click **`Play DeadStatic.bat`**. That's it.
 
-```bash
-ollama pull dolphin-phi
-```
-
-### Run
+### For developers (from source)
 
 ```bash
-pip install rich requests
+pip install rich requests huggingface-hub
 python game.py
 ```
 
-That's it. The game auto-detects Ollama and the model on startup.
+On first launch, the game automatically downloads:
+1. **llama-server** (~200 MB, CUDA or CPU build auto-detected)
+2. **AI model** (~1.05 GB, Q4 quantized GGUF)
+
+After that, no internet is needed.
 
 ---
 
@@ -56,20 +54,24 @@ Player Input
      v
 +--------------------+
 |    Game Loop        |
-|  +--------------+   |     +-----------+
-|  | Event System |---+--->| Prompt     |-----> Local LLM (Ollama)
-|  +--------------+   |    | Builder    |           |
-|  | Rules Engine |   |    +-----------+            v
-|  +--------------+   |                      +-----------+
-|  | State Manager|<--+<--------------------| Output     |
-|  +--------------+   |                      | Parser     |
-+--------------------+                      +-----------+
+|  +--------------+   |     +-----------+     +------------------+
+|  | Event System |---+--->| Prompt     |---->| llama-server.exe |
+|  +--------------+   |    | Builder    |     | (subprocess)     |
+|  | Rules Engine |   |    +-----------+     | HTTP API         |
+|  +--------------+   |          ^            +------------------+
+|  | State Manager|<--+---------+--- parsed output
+|  +--------------+   |
++--------------------+
      |
      v
   Rich TUI
 ```
 
-**The LLM narrates. The code decides.** All state changes — damage, loot, movement, infection — are computed deterministically by the rules engine. The LLM receives structured game state and produces narrative text with player choices. An 8-strategy parser extracts choices from the model output, handling format variations that small local models produce. If parsing fails entirely, context-aware fallback choices are generated from game state.
+**The LLM narrates. The code decides.** All state changes — damage, loot, movement, infection — are computed deterministically by the rules engine. The LLM receives structured game state and produces narrative text with player choices.
+
+The game starts `llama-server.exe` as a background subprocess and communicates via its OpenAI-compatible HTTP API. The server auto-shuts down when the game exits. NVIDIA GPUs are auto-detected for CUDA acceleration; CPU mode works fine too.
+
+**Model:** [Josiefied-Qwen3-1.7B-abliterated-v1](https://huggingface.co/Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf) (Q4_0 quantization, 1.05 GB)
 
 ### The 15-Day Structure
 
@@ -84,15 +86,15 @@ Player Input
 
 ### Game Systems
 
-**Survival** — Hunger, thirst, and stamina drain every turn. Hit zero and your health starts bleeding. Eat, drink, and rest to stay alive.
+**Survival** — Hunger, thirst, and stamina drain every turn. Hit zero and your health starts bleeding.
 
-**Infection** — Zombie bites and scratches inject infection that ticks up each turn. Antibiotics slow it. The experimental antiviral in the Hospital Basement can nearly cure it. Hit 100% and you turn. Game over.
+**Infection** — Zombie bites inject infection that ticks up each turn. Hit 100% and you turn.
 
-**Combat** — Skill-based with dice rolls. Your combat skill + weapon damage vs. threat level. Firearms hit hard but generate noise that attracts more zombies. Sometimes stealth is the smarter play.
+**Combat** — Skill-based with dice rolls. Firearms hit hard but generate noise that attracts more zombies.
 
-**Morale** — Tracks your psychological state. Affects narrative tone: high morale reads as grim determination, low morale as creeping despair. Moral choices (saving or abandoning survivors) push it in different directions.
+**Morale** — Tracks your psychological state. Moral choices push it in different directions.
 
-**Exploration** — 14 interconnected locations from the starting apartment to the evacuation zone. Each has its own threat level, loot table, and connections. Some locations are locked behind the story progression.
+**Exploration** — 14 interconnected locations with threat levels, loot tables, and connections.
 
 ### Content
 
@@ -122,8 +124,6 @@ Player Input
 
 ## Building a Distributable Package
 
-Three scripts handle packaging into a standalone Windows release:
-
 ### Step 1 — Compile to exe
 
 ```bash
@@ -131,36 +131,33 @@ pip install pyinstaller
 python build.py
 ```
 
-Produces `dist/DeadStatic/DeadStatic.exe` with all Python dependencies.
-
-### Step 2 — Bundle Ollama + model
+### Step 2 — Bundle with runtime + model
 
 ```bash
 python package.py
 ```
 
-Automatically locates your `ollama.exe` and extracts **only the dolphin-phi model blobs** (not your entire model library). Creates:
+This requires the runtime and model to be downloaded first (run `python game.py` once).
+
+Creates a fully self-contained release folder:
 
 ```
 release/DeadStatic/
   DeadStatic.exe
   _internal/
-  ollama/
-    ollama.exe
+  runtime/
+    llama-server.exe    + CUDA DLLs
   models/
-    manifests/...
-    blobs/...        (only dolphin-phi layers)
+    *.q4_0.gguf         (~1.05 GB)
   Play DeadStatic.bat
   README.txt
 ```
 
-The `Play DeadStatic.bat` launcher handles everything: starts Ollama, waits for it to be ready, launches the game, and shuts Ollama down on exit.
-
-Compress this folder to `.zip` and distribute.
+Compress to `.zip` and distribute. Players just unzip and double-click.
 
 ### Step 3 (optional) — Windows installer
 
-Install [Inno Setup](https://jrsoftware.org/isinfo.php), open `installer.iss`, and build. Produces a single `DeadStatic_Setup.exe` with desktop shortcuts and uninstaller.
+Install [Inno Setup](https://jrsoftware.org/isinfo.php), open `installer.iss`, and build.
 
 ---
 
@@ -170,33 +167,25 @@ All settings are in the `Config` class at the top of `game.py`:
 
 ```python
 class Config:
-    LLM_BACKEND = "ollama"
-    OLLAMA_URL = "http://localhost:11434/api/generate"
-    OLLAMA_MODEL = "dolphin-phi"
-    GGUF_MODEL_PATH = "./model.gguf"    # for llama.cpp backend
+    HF_REPO_ID = "Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf"
+    GGUF_FILENAME = "josiefied-qwen3-1.7b-abliterated-v1.q4_0.gguf"
+    N_CTX = 4096              # context window size
+    N_GPU_LAYERS = 99         # layers to offload to GPU
+    SERVER_PORT = 8384        # local server port
     LLM_TEMPERATURE = 0.8
     LLM_MAX_TOKENS = 400
-    MAX_HISTORY = 8                     # turns of context sent to LLM
 ```
 
-### Using a different model
+### Using a different quantization
 
-Change `OLLAMA_MODEL` to any Ollama-compatible model. Recommended:
+| File | Size | Notes |
+|------|------|-------|
+| `...q4_0.gguf` | 1.05 GB | Default. Fast, small. |
+| `...q5_0.gguf` | 1.23 GB | Better quality. |
+| `...q6_k.gguf` | 1.42 GB | Good balance. |
+| `...q8_0.gguf` | 1.83 GB | Near-lossless. |
 
-| Model | Size | Notes |
-|-------|------|-------|
-| `dolphin-phi` | ~1.6 GB | Default. Fast, decent English. |
-| `llama3.2:3b` | ~2 GB | Better coherence, slightly slower. |
-| `qwen2.5:3b` | ~2 GB | Strong instruction following. |
-| `mistral:7b` | ~4 GB | Best quality, needs more RAM. |
-
-### Using llama.cpp instead of Ollama
-
-```bash
-pip install llama-cpp-python
-```
-
-Set `LLM_BACKEND = "llama_cpp"` and point `GGUF_MODEL_PATH` to a `.gguf` file. No Ollama needed.
+Change `GGUF_FILENAME` in `Config`.
 
 ---
 
@@ -204,24 +193,18 @@ Set `LLM_BACKEND = "llama_cpp"` and point `GGUF_MODEL_PATH` to a `.gguf` file. N
 
 ### Add a location
 
-Add an entry to the `LOCATIONS` dict:
-
 ```python
 "Gas Station": {
     "type": "building",
     "base_threat": 5,
     "description": "Pumps are dry. The convenience store window is smashed.",
-    "connections": ["Main Street"],       # link to existing locations
+    "connections": ["Main Street"],
     "loot_table": ["energy bar", "matchbox", "glass bottle"],
     "loot_chance": 0.4,
 },
 ```
 
-Then add `"Gas Station"` to the `connections` list of `Main Street` (or wherever it should connect).
-
 ### Add an item
-
-Add an entry to the `ITEMS` dict:
 
 ```python
 "molotov cocktail": {
@@ -232,25 +215,9 @@ Add an entry to the `ITEMS` dict:
 },
 ```
 
-Items are automatically available in loot tables that reference them by name.
-
-### Add an event
-
-Add to the relevant pool in `EVENT_POOL`:
-
-```python
-{
-    "id": "trapped_survivor",
-    "weight": 15,
-    "min_day": 4,
-    "title": "Cries for help",
-    "template": "Someone is screaming behind a collapsed wall. You could try to dig them out.",
-},
-```
-
 ### Change the narrator voice
 
-Edit `SYSTEM_PROMPT`. The current style is terse and Cormac McCarthy-inspired. You could change it to pulpy horror, dark comedy, military thriller, or anything else — the game mechanics stay the same regardless.
+Edit `SYSTEM_PROMPT`. The game mechanics stay the same regardless of narrative style.
 
 ---
 
@@ -259,14 +226,10 @@ Edit `SYSTEM_PROMPT`. The current style is terse and Cormac McCarthy-inspired. Y
 ```
 game.py           Main game — all systems in a single file (~1800 lines)
 build.py          PyInstaller build script
-package.py        Bundles exe + Ollama + dolphin-phi model
+package.py        Bundles exe + llama-server + GGUF model
 installer.iss     Inno Setup script for Windows installer
-requirements.txt  Python dependencies
+requirements.txt  Python dependencies (rich, requests, huggingface-hub)
 ```
-
-### Why a single file?
-
-Portability. The entire game is one `game.py` you can run anywhere with Python + Ollama. The multi-file packaging (`build.py`, `package.py`) is only for distribution.
 
 ---
 
@@ -274,11 +237,11 @@ Portability. The entire game is one `game.py` you can run anywhere with Python +
 
 | | Minimum | Recommended |
 |---|---------|-------------|
-| OS | Windows 10 / Linux / macOS | Same |
+| OS | Windows 10 x64 | Same |
 | RAM | 4 GB | 8 GB |
-| Disk | ~2 GB (model + game) | Same |
-| GPU | Not required | NVIDIA GPU for faster inference |
-| Internet | Not required | Only for initial `ollama pull` |
+| Disk | ~1.5 GB | Same |
+| GPU | Not required | NVIDIA GPU (auto-detected) |
+| Internet | First launch only | Not needed if bundled |
 
 ---
 

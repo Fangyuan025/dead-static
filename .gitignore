@@ -14,9 +14,10 @@ __pycache__/
 # Game saves
 dead_static_save.json
 
-# Model files (too large for git)
+# Runtime and model files (too large for git)
 *.gguf
 models/
+runtime/
 
 # OS
 .DS_Store

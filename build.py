@@ -67,7 +67,7 @@ def build():
         print("  ✓ BUILD SUCCESSFUL")
         print("══════════════════════════════════════")
         print(f"  Output: dist/DeadStatic/DeadStatic.exe")
-        print(f"\n  Next step: run package.py to bundle with Ollama + model")
+        print(f"\n  Next step: run package.py to bundle with runtime + model")
     else:
         print("\n  ✗ Build failed. Check errors above.")
         sys.exit(1)

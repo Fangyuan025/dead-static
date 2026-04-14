@@ -1,6 +1,6 @@
 """
 DEAD STATIC — A Zombie Apocalypse Text Adventure
-Powered by local LLM (Ollama or llama-cpp-python)
+Powered by local LLM (llama.cpp server with GGUF Q4 quantized model)
 """
 
 import json
@@ -9,9 +9,67 @@ import random
 import re
 import time
 import sys
+import subprocess
+
+# ─── Fix Chinese display on Windows CMD / PowerShell ───
+if os.name == "nt":
+    import ctypes
+    import ctypes.wintypes
+
+    # Switch console to UTF-8 code page
+    ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    ctypes.windll.kernel32.SetConsoleCP(65001)
+
+    # Ensure Python stdout/stderr use UTF-8
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+    # Set console font to one that supports CJK characters
+    try:
+        LF_FACESIZE = 32
+        STD_OUTPUT_HANDLE = -11
+
+        class CONSOLE_FONT_INFOEX(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.wintypes.ULONG),
+                ("nFont", ctypes.wintypes.DWORD),
+                ("dwFontSize", ctypes.wintypes.COORD),
+                ("FontFamily", ctypes.c_uint),
+                ("FontWeight", ctypes.c_uint),
+                ("FaceName", ctypes.c_wchar * LF_FACESIZE),
+            ]
+
+        font = CONSOLE_FONT_INFOEX()
+        font.cbSize = ctypes.sizeof(CONSOLE_FONT_INFOEX)
+        handle = ctypes.windll.kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        ctypes.windll.kernel32.GetCurrentConsoleFontEx(handle, False, ctypes.byref(font))
+        current_font = font.FaceName
+        # Only change font if current one is not CJK-capable
+        cjk_fonts = {"NSimSun", "SimSun", "新宋体", "Microsoft YaHei", "MS Gothic",
+                      "MingLiU", "PMingLiU", "KaiTi", "FangSong", "SimHei"}
+        if current_font not in cjk_fonts:
+            # Try multiple CJK fonts in preference order
+            for fname in ["NSimSun", "SimSun", "新宋体"]:
+                font.FaceName = fname
+                font.dwFontSize.X = 0
+                font.dwFontSize.Y = 16
+                font.FontFamily = 0x36  # FF_MODERN | FIXED_PITCH | TrueType
+                font.FontWeight = 400
+                ok = ctypes.windll.kernel32.SetCurrentConsoleFontEx(
+                    handle, False, ctypes.byref(font))
+                if ok:
+                    break
+    except Exception:
+        pass  # Non-critical
+import atexit
+import zipfile
+import platform
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional
+
+import requests
 
 # ─── Try to import Rich for fancy TUI, fallback to plain text ───
 try:
@@ -27,43 +85,206 @@ try:
 except ImportError:
     HAS_RICH = False
 
-# ─── Try to import LLM backends ───
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
-
-try:
-    from llama_cpp import Llama
-    HAS_LLAMA_CPP = True
-except ImportError:
-    HAS_LLAMA_CPP = False
-
 
 # ══════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 class Config:
-    # LLM Backend: "ollama" or "llama_cpp"
-    LLM_BACKEND = "ollama"
+    # GGUF model settings
+    HF_REPO_ID = "Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf"
+    GGUF_FILENAME = "josiefied-qwen3-1.7b-abliterated-v1.q4_0.gguf"
+    MODEL_DIR = os.path.join(_BASE_DIR, "models")
+    GGUF_MODEL_PATH = os.path.join(MODEL_DIR, GGUF_FILENAME)
 
-    # Ollama settings
-    OLLAMA_URL = "http://localhost:11434/api/generate"
-    OLLAMA_MODEL = "dolphin-phi"
+    # llama-server binary settings
+    RUNTIME_DIR = os.path.join(_BASE_DIR, "runtime")
+    LLAMA_SERVER_EXE = os.path.join(RUNTIME_DIR, "llama-server.exe")
+    # Release info for auto-download
+    LLAMA_CPP_VERSION = "b8783"
+    LLAMA_CPP_CUDA_ZIP = f"llama-{LLAMA_CPP_VERSION}-bin-win-cuda-13.1-x64.zip"
+    LLAMA_CPP_CUDART_ZIP = f"cudart-llama-bin-win-cuda-13.1-x64.zip"
+    LLAMA_CPP_CPU_ZIP = f"llama-{LLAMA_CPP_VERSION}-bin-win-cpu-x64.zip"
+    LLAMA_CPP_RELEASE_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_VERSION}"
 
-    # llama.cpp settings
-    GGUF_MODEL_PATH = "./model.gguf"
+    # Server settings
+    SERVER_HOST = "127.0.0.1"
+    SERVER_PORT = 8384
+    SERVER_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
     N_CTX = 4096
-    N_GPU_LAYERS = -1  # -1 = offload all to GPU
+    N_GPU_LAYERS = 99  # offload all to GPU
 
     # Game settings
     SAVE_FILE = "dead_static_save.json"
     MAX_HISTORY = 8
     LLM_MAX_TOKENS = 400
-    LLM_TEMPERATURE = 0.8
+    LLM_TEMPERATURE = 0.7
     LLM_TOP_P = 0.9
+
+    # Language: "en" or "zh"
+    LANG = "en"
+
+
+# ══════════════════════════════════════════════════════════════════
+# TRANSLATION SYSTEM
+# ══════════════════════════════════════════════════════════════════
+
+_TEXTS = {
+    # Time & Weather
+    "Dawn": {"zh": "黎明"}, "Daytime": {"zh": "白天"}, "Dusk": {"zh": "黄昏"}, "Night": {"zh": "夜晚"},
+    "Clear skies": {"zh": "晴空"}, "Overcast": {"zh": "阴天"}, "Heavy rain": {"zh": "暴雨"},
+    "Dense fog": {"zh": "浓雾"}, "Thunderstorm": {"zh": "雷暴"},
+
+    # UI — Status bar
+    "DAY": {"zh": "第 {0} 天"},
+    "Threat:": {"zh": "威胁:"},
+    "bare hands": {"zh": "赤手空拳"},
+    "empty": {"zh": "空"},
+
+    # UI — Menus
+    "Choose: ": {"zh": "请选择: "},
+    "[1] New Game    [2] Load Game    [3] Settings    [Q] Quit": {
+        "zh": "[1] 新游戏    [2] 读取存档    [3] 设置    [Q] 退出"},
+    "What is your name, survivor? ": {"zh": "幸存者，你叫什么名字？ "},
+    "Survivor": {"zh": "幸存者"},
+    "Good luck, {name}. You'll need it.": {"zh": "{name}，祝你好运。你会需要的。"},
+    "Press Enter to begin...": {"zh": "按回车键开始..."},
+    "Press Enter to exit...": {"zh": "按回车键退出..."},
+    "Press Enter to continue...": {"zh": "按回车键继续..."},
+    "No save file found.": {"zh": "未找到存档文件。"},
+    "Game loaded.": {"zh": "游戏已加载。"},
+    "Game saved.": {"zh": "游戏已保存。"},
+    "Your choice: ": {"zh": "你的选择: "},
+    "Invalid. Choose A, B, or C (or type 'help').": {"zh": "无效输入。请选择 A、B 或 C（或输入 'help'）。"},
+    "Save before quitting? (y/n) ": {"zh": "退出前保存？(y/n) "},
+
+    # Opening narrative
+    "opening_narrative": {
+        "en": (
+            "\nYou wake to the sound of distant screaming.\n"
+            "Day one. Or maybe two. Hard to tell anymore.\n"
+            "The apartment around you has been ransacked. Broken glass, overturned furniture,\n"
+            "and a barricaded door that won't hold forever.\n"
+            "Outside, the city of the dead stretches in every direction.\n"
+            "You need to survive. You need to find a way out.\n"
+        ),
+        "zh": (
+            "\n你在远处的尖叫声中醒来。\n"
+            "第一天。也许是第二天。已经分不清了。\n"
+            "公寓被洗劫一空。碎玻璃、翻倒的家具，\n"
+            "还有一扇撑不了多久的路障门。\n"
+            "窗外，死亡之城向四面八方延伸。\n"
+            "你必须活下去。你必须找到出路。\n"
+        ),
+    },
+    "You find nearby:": {"zh": "你在附近找到了:"},
+
+    # Settings
+    "(Q4 quantized)": {"zh": "(Q4量化)"},
+    "[1] Run diagnostics": {"zh": "[1] 运行诊断"},
+    "[2] Re-download model & runtime": {"zh": "[2] 重新下载模型和运行时"},
+    "[3] Language: {lang}": {"zh": "[3] 语言: {lang}"},
+    "[B] Back": {"zh": "[B] 返回"},
+    "Language switched to: {lang}": {"zh": "语言已切换为: {lang}"},
+    "Settings": {"zh": "设置"},
+
+    # Initialize LLM
+    "First-time setup: downloading AI runtime...": {"zh": "首次设置：正在下载AI运行时..."},
+    "Runtime download failed.": {"zh": "运行时下载失败。"},
+    "Check your internet connection and try again.": {"zh": "请检查网络连接后重试。"},
+    "Downloading AI model (one-time, ~1 GB)...": {"zh": "正在下载AI模型（仅需一次，约1 GB）..."},
+    "Model download failed.": {"zh": "模型下载失败。"},
+    "Starting AI engine...": {"zh": "正在启动AI引擎..."},
+    "Failed to start AI engine.": {"zh": "AI引擎启动失败。"},
+    "Try restarting the game.": {"zh": "请尝试重启游戏。"},
+    "Could not initialize LLM. Check settings.": {"zh": "无法初始化语言模型，请检查设置。"},
+
+    # Commands
+    "Equipped {item}.": {"zh": "已装备 {item}。"},
+    "Can't equip {item} as a weapon.": {"zh": "无法将 {item} 作为武器装备。"},
+    "You don't have that.": {"zh": "你没有这个物品。"},
+    "(Auto-generated choices for this turn)": {"zh": "（本回合自动生成选项）"},
+
+    # Game over screens
+    "YOU DIED": {"zh": "你 死 了"},
+    "Survived {days} days.": {"zh": "存活了 {days} 天。"},
+    "Zombies killed:": {"zh": "击杀丧尸:"},
+    "People saved:": {"zh": "救助幸存者:"},
+    "People left behind:": {"zh": "遗弃的人:"},
+    "YOU TURNED": {"zh": "你 变 异 了"},
+    "The infection claimed another soul.": {"zh": "感染吞噬了又一个灵魂。"},
+    "You lasted {days} days before losing yourself.": {"zh": "你坚持了 {days} 天，最终失去了自我。"},
+    "YOU ESCAPED": {"zh": "你 逃 出 生 天"},
+    "The helicopter lifts off at dawn.": {"zh": "直升机在黎明时分起飞。"},
+    "{days} days. {kills} kills. You made it.": {"zh": "{days} 天。击杀 {kills}。你活下来了。"},
+
+    # Loading
+    "The dead city speaks...": {"zh": "死寂之城在低语..."},
+    "Thinking...": {"zh": "思考中..."},
+
+    # Help
+    "help_text": {
+        "en": """COMMANDS (type during your turn):
+  [A/B/C]    — Choose an action
+  inventory  — View detailed inventory
+  use <item> — Use an item (e.g., 'use canned beans')
+  equip <item> — Equip a weapon
+  map        — View known locations
+  status     — Detailed player status
+  save       — Save the game
+  help       — Show this help
+  quit       — Quit the game""",
+        "zh": """命令（在你的回合中输入）:
+  [A/B/C]    — 选择一个行动
+  inventory  — 查看详细物品栏
+  use <物品> — 使用物品（如 'use canned beans'）
+  equip <物品> — 装备武器
+  map        — 查看已知地点
+  status     — 详细状态信息
+  save       — 保存游戏
+  help       — 显示此帮助
+  quit       — 退出游戏""",
+    },
+
+    # Inventory & Status
+    "Inventory": {"zh": "物品栏"},
+    "Item": {"zh": "物品"}, "Type": {"zh": "类型"}, "Description": {"zh": "描述"},
+    "Status": {"zh": "状态"}, "Map": {"zh": "地图"},
+    "Name:": {"zh": "名字:"}, "Skills:": {"zh": "技能:"},
+    "Combat": {"zh": "战斗"}, "Stealth": {"zh": "潜行"}, "Medical": {"zh": "医疗"},
+    "Survival": {"zh": "生存"}, "Persuasion": {"zh": "说服"},
+    "Kills:": {"zh": "击杀:"}, "Saved:": {"zh": "已救:"}, "Abandoned:": {"zh": "遗弃:"},
+    "Days survived:": {"zh": "存活天数:"},
+    "Current:": {"zh": "当前:"}, "Connected:": {"zh": "连通:"},
+    "Discovered locations:": {"zh": "已发现地点:"},
+
+    # Item types
+    "food": {"zh": "食物"}, "water": {"zh": "水"}, "medical": {"zh": "医疗"},
+    "weapon": {"zh": "武器"}, "utility": {"zh": "工具"}, "armor": {"zh": "护甲"},
+    "ammo": {"zh": "弹药"}, "special": {"zh": "特殊"},
+
+    # Title screen
+    "A Zombie Apocalypse Text Adventure": {"zh": "末日丧尸文字冒险"},
+    "Powered by Local LLM": {"zh": "由本地AI驱动"},
+}
+
+
+def t(key: str, **kwargs) -> str:
+    """Translate a string key to the current language."""
+    lang = Config.LANG
+    entry = _TEXTS.get(key)
+    if entry is None:
+        text = key
+    elif isinstance(entry, dict):
+        text = entry.get(lang, entry.get("en", key))
+    else:
+        text = entry
+    for k, v in kwargs.items():
+        text = text.replace(f"{{{k}}}", str(v))
+    return text
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -148,6 +369,7 @@ LOCATIONS = {
     "Abandoned Apartment": {
         "type": "shelter", "base_threat": 2,
         "description": "A ransacked apartment on the third floor. The door barely holds.",
+        "desc_zh": "三楼一间被洗劫的公寓。门勉强撑着。",
         "connections": ["Main Street", "Back Alley", "Rooftop"],
         "loot_table": ["kitchen knife", "canned beans", "dirty bandage", "matchbox"],
         "loot_chance": 0.3,
@@ -155,6 +377,7 @@ LOCATIONS = {
     "Main Street": {
         "type": "street", "base_threat": 5,
         "description": "A wide boulevard littered with wrecked cars and dried blood.",
+        "desc_zh": "宽阔的大街上散落着报废的汽车和干涸的血迹。",
         "connections": ["Abandoned Apartment", "Grocery Store", "Police Station", "Hospital"],
         "loot_table": ["glass bottle", "car battery", "pipe wrench"],
         "loot_chance": 0.2,
@@ -162,6 +385,7 @@ LOCATIONS = {
     "Back Alley": {
         "type": "street", "base_threat": 4,
         "description": "Narrow alley reeking of rot. Dumpsters line both walls.",
+        "desc_zh": "狭窄的小巷弥漫着腐臭。两侧排列着垃圾箱。",
         "connections": ["Abandoned Apartment", "Pawn Shop", "Sewer Entrance"],
         "loot_table": ["crowbar", "rat meat", "plastic tarp", "duct tape"],
         "loot_chance": 0.4,
@@ -169,6 +393,7 @@ LOCATIONS = {
     "Rooftop": {
         "type": "shelter", "base_threat": 1,
         "description": "Wind-swept rooftop with a view of the ruined skyline. Relatively safe.",
+        "desc_zh": "被风吹拂的天台，可以俯瞰废墟般的天际线。相对安全。",
         "connections": ["Abandoned Apartment"],
         "loot_table": ["rainwater bottle", "signal flare"],
         "loot_chance": 0.15,
@@ -176,6 +401,7 @@ LOCATIONS = {
     "Grocery Store": {
         "type": "building", "base_threat": 6,
         "description": "Shelves mostly bare, but the back storage room might still have supplies.",
+        "desc_zh": "货架基本被搬空了，但后面的储藏室可能还有物资。",
         "connections": ["Main Street"],
         "loot_table": ["canned soup", "bottled water", "energy bar", "bleach", "canned beans"],
         "loot_chance": 0.5,
@@ -183,6 +409,7 @@ LOCATIONS = {
     "Police Station": {
         "type": "building", "base_threat": 7,
         "description": "Barricaded front, broken windows. Could have weapons — or worse.",
+        "desc_zh": "正门被封锁，窗户破碎。可能有武器——也可能有更糟的东西。",
         "connections": ["Main Street"],
         "loot_table": ["pistol", "ammo clip", "body armor vest", "first aid kit", "radio"],
         "loot_chance": 0.35,
@@ -190,6 +417,7 @@ LOCATIONS = {
     "Hospital": {
         "type": "building", "base_threat": 8,
         "description": "The west wing collapsed. East wing is dark and full of shuffling sounds.",
+        "desc_zh": "西翼已经坍塌。东翼一片漆黑，到处是拖行的声音。",
         "connections": ["Main Street", "Hospital Basement"],
         "loot_table": ["antibiotics", "surgical kit", "morphine syringe", "medical mask", "first aid kit"],
         "loot_chance": 0.4,
@@ -197,6 +425,7 @@ LOCATIONS = {
     "Hospital Basement": {
         "type": "building", "base_threat": 9,
         "description": "Emergency generators still hum. Smells like formaldehyde and death.",
+        "desc_zh": "应急发电机还在嗡嗡作响。空气中弥漫着福尔马林和死亡的气味。",
         "connections": ["Hospital"],
         "loot_table": ["experimental antiviral", "hazmat suit", "defibrillator"],
         "loot_chance": 0.25,
@@ -204,6 +433,7 @@ LOCATIONS = {
     "Pawn Shop": {
         "type": "building", "base_threat": 4,
         "description": "Iron bars on the windows. The owner didn't make it, but his stock did.",
+        "desc_zh": "窗户上装着铁栏。店主没活下来，但他的货物还在。",
         "connections": ["Back Alley"],
         "loot_table": ["machete", "hunting knife", "baseball bat", "binoculars", "lockpick set"],
         "loot_chance": 0.45,
@@ -211,6 +441,7 @@ LOCATIONS = {
     "Sewer Entrance": {
         "type": "wilderness", "base_threat": 6,
         "description": "A rusted grate leads into the sewer tunnels. Quiet, but claustrophobic.",
+        "desc_zh": "一扇锈蚀的铁栅通向下水道。安静，但令人窒息。",
         "connections": ["Back Alley", "Sewer Tunnels"],
         "loot_table": ["flashlight", "rubber boots", "gas mask"],
         "loot_chance": 0.3,
@@ -218,6 +449,7 @@ LOCATIONS = {
     "Sewer Tunnels": {
         "type": "wilderness", "base_threat": 7,
         "description": "Ankle-deep water, echoing drips. Something moved in the dark ahead.",
+        "desc_zh": "齐踝深的水，回荡的水滴声。黑暗前方有什么东西动了。",
         "connections": ["Sewer Entrance", "River Bridge"],
         "loot_table": ["military MRE", "glow stick", "waterproof bag"],
         "loot_chance": 0.35,
@@ -225,6 +457,7 @@ LOCATIONS = {
     "River Bridge": {
         "type": "street", "base_threat": 5,
         "description": "The bridge is partially collapsed but crossable. The other side looks... different.",
+        "desc_zh": "桥面部分坍塌但还能通行。对岸看起来……不一样。",
         "connections": ["Sewer Tunnels", "Military Checkpoint"],
         "loot_table": ["rope", "signal flare", "binoculars"],
         "loot_chance": 0.2,
@@ -232,6 +465,7 @@ LOCATIONS = {
     "Military Checkpoint": {
         "type": "building", "base_threat": 6,
         "description": "Sandbags, razor wire, and silence. The soldiers are long gone — or turned.",
+        "desc_zh": "沙袋、铁丝网，一片死寂。士兵们早已离去——或者已经变异。",
         "connections": ["River Bridge", "Evacuation Zone"],
         "loot_table": ["assault rifle", "ammo box", "MRE pack", "military radio", "body armor vest"],
         "loot_chance": 0.4,
@@ -239,6 +473,7 @@ LOCATIONS = {
     "Evacuation Zone": {
         "type": "building", "base_threat": 3,
         "description": "A fenced compound with helicopter pads. The last broadcast said rescue comes at dawn.",
+        "desc_zh": "一个有直升机停机坪的围栏营地。最后一次广播说救援会在黎明到来。",
         "connections": ["Military Checkpoint"],
         "loot_table": [],
         "loot_chance": 0.0,
@@ -251,62 +486,79 @@ LOCATIONS = {
 
 ITEMS = {
     # Food & Water
-    "canned beans":      {"type": "food", "hunger_restore": 25, "desc": "Dented but sealed"},
-    "canned soup":       {"type": "food", "hunger_restore": 30, "desc": "Chicken noodle, lukewarm"},
-    "energy bar":        {"type": "food", "hunger_restore": 15, "desc": "Expired but edible"},
-    "rat meat":          {"type": "food", "hunger_restore": 20, "desc": "Cooked over an open flame... hopefully"},
-    "military MRE":      {"type": "food", "hunger_restore": 45, "desc": "Meals Ready to Eat. Tastes like cardboard salvation"},
-    "MRE pack":          {"type": "food", "hunger_restore": 45, "desc": "Standard military ration"},
-    "bottled water":     {"type": "water", "thirst_restore": 40, "desc": "Clean, sealed"},
-    "rainwater bottle":  {"type": "water", "thirst_restore": 25, "desc": "Collected from the rooftop"},
+    "canned beans":      {"type": "food", "hunger_restore": 25, "desc": "Dented but sealed", "name_zh": "罐装豆子", "desc_zh": "凹了但密封完好"},
+    "canned soup":       {"type": "food", "hunger_restore": 30, "desc": "Chicken noodle, lukewarm", "name_zh": "罐装汤", "desc_zh": "鸡肉面条汤，微温"},
+    "energy bar":        {"type": "food", "hunger_restore": 15, "desc": "Expired but edible", "name_zh": "能量棒", "desc_zh": "过期了但还能吃"},
+    "rat meat":          {"type": "food", "hunger_restore": 20, "desc": "Cooked over an open flame... hopefully", "name_zh": "鼠肉", "desc_zh": "用明火烤过的……但愿是"},
+    "military MRE":      {"type": "food", "hunger_restore": 45, "desc": "Meals Ready to Eat. Tastes like cardboard salvation", "name_zh": "军用口粮", "desc_zh": "即食餐。味如嚼蜡的救赎"},
+    "MRE pack":          {"type": "food", "hunger_restore": 45, "desc": "Standard military ration", "name_zh": "口粮包", "desc_zh": "标准军用配给"},
+    "bottled water":     {"type": "water", "thirst_restore": 40, "desc": "Clean, sealed", "name_zh": "瓶装水", "desc_zh": "干净、密封"},
+    "rainwater bottle":  {"type": "water", "thirst_restore": 25, "desc": "Collected from the rooftop", "name_zh": "雨水瓶", "desc_zh": "从天台收集的"},
 
     # Medical
-    "dirty bandage":     {"type": "medical", "heal": 10, "infection_risk": 10, "desc": "Better than nothing"},
-    "first aid kit":     {"type": "medical", "heal": 35, "infection_risk": 0, "desc": "Standard trauma kit"},
-    "surgical kit":      {"type": "medical", "heal": 50, "infection_risk": 0, "desc": "Professional-grade"},
-    "antibiotics":       {"type": "medical", "heal": 10, "infection_reduce": 30, "desc": "Could slow the infection"},
-    "morphine syringe":  {"type": "medical", "heal": 5, "morale_restore": 30, "desc": "Numbs everything"},
-    "experimental antiviral": {"type": "medical", "infection_reduce": 80, "desc": "Labeled 'TRIAL PHASE III'. Might work"},
-    "medical mask":      {"type": "armor", "protection": 5, "desc": "Thin barrier between you and the air"},
-    "bleach":            {"type": "utility", "desc": "Can purify water or clean wounds (painfully)"},
+    "dirty bandage":     {"type": "medical", "heal": 10, "infection_risk": 10, "desc": "Better than nothing", "name_zh": "脏绷带", "desc_zh": "聊胜于无"},
+    "first aid kit":     {"type": "medical", "heal": 35, "infection_risk": 0, "desc": "Standard trauma kit", "name_zh": "急救包", "desc_zh": "标准创伤急救包"},
+    "surgical kit":      {"type": "medical", "heal": 50, "infection_risk": 0, "desc": "Professional-grade", "name_zh": "手术工具", "desc_zh": "专业级"},
+    "antibiotics":       {"type": "medical", "heal": 10, "infection_reduce": 30, "desc": "Could slow the infection", "name_zh": "抗生素", "desc_zh": "也许能延缓感染"},
+    "morphine syringe":  {"type": "medical", "heal": 5, "morale_restore": 30, "desc": "Numbs everything", "name_zh": "吗啡注射器", "desc_zh": "麻痹一切"},
+    "experimental antiviral": {"type": "medical", "infection_reduce": 80, "desc": "Labeled 'TRIAL PHASE III'. Might work", "name_zh": "实验性抗病毒药", "desc_zh": "标签写着'三期临床'。也许有效"},
+    "medical mask":      {"type": "armor", "protection": 5, "desc": "Thin barrier between you and the air", "name_zh": "医用口罩", "desc_zh": "你和空气之间薄薄的屏障"},
+    "bleach":            {"type": "utility", "desc": "Can purify water or clean wounds (painfully)", "name_zh": "漂白剂", "desc_zh": "可以净水或清洗伤口（很疼）"},
 
     # Weapons
-    "kitchen knife":     {"type": "weapon", "damage": 10, "desc": "Dull but desperate"},
-    "hunting knife":     {"type": "weapon", "damage": 15, "desc": "Serrated edge, good grip"},
-    "crowbar":           {"type": "weapon", "damage": 18, "desc": "Heavy, reliable, opens doors too"},
-    "pipe wrench":       {"type": "weapon", "damage": 15, "desc": "Blunt and brutal"},
-    "machete":           {"type": "weapon", "damage": 22, "desc": "Clean cuts. Keep it sharp"},
-    "baseball bat":      {"type": "weapon", "damage": 16, "desc": "Aluminum. Dented but solid"},
-    "pistol":            {"type": "weapon", "damage": 30, "noise": 8, "desc": "9mm. Loud. Attracts attention"},
-    "assault rifle":     {"type": "weapon", "damage": 45, "noise": 10, "desc": "Full auto. Last resort"},
-    "glass bottle":      {"type": "weapon", "damage": 8, "desc": "Breaks after one hit"},
+    "kitchen knife":     {"type": "weapon", "damage": 10, "desc": "Dull but desperate", "name_zh": "菜刀", "desc_zh": "钝了但绝望时够用"},
+    "hunting knife":     {"type": "weapon", "damage": 15, "desc": "Serrated edge, good grip", "name_zh": "猎刀", "desc_zh": "锯齿刃，握感好"},
+    "crowbar":           {"type": "weapon", "damage": 18, "desc": "Heavy, reliable, opens doors too", "name_zh": "撬棍", "desc_zh": "沉重、可靠，还能撬门"},
+    "pipe wrench":       {"type": "weapon", "damage": 15, "desc": "Blunt and brutal", "name_zh": "管钳", "desc_zh": "钝重而凶狠"},
+    "machete":           {"type": "weapon", "damage": 22, "desc": "Clean cuts. Keep it sharp", "name_zh": "砍刀", "desc_zh": "干脆利落。保持锋利"},
+    "baseball bat":      {"type": "weapon", "damage": 16, "desc": "Aluminum. Dented but solid", "name_zh": "棒球棍", "desc_zh": "铝制。凹了但结实"},
+    "pistol":            {"type": "weapon", "damage": 30, "noise": 8, "desc": "9mm. Loud. Attracts attention", "name_zh": "手枪", "desc_zh": "9mm。很响。会引来注意"},
+    "assault rifle":     {"type": "weapon", "damage": 45, "noise": 10, "desc": "Full auto. Last resort", "name_zh": "突击步枪", "desc_zh": "全自动。最后手段"},
+    "glass bottle":      {"type": "weapon", "damage": 8, "desc": "Breaks after one hit", "name_zh": "玻璃瓶", "desc_zh": "一击即碎"},
 
     # Utility
-    "matchbox":          {"type": "utility", "desc": "Half-empty. Precious in the dark"},
-    "flashlight":        {"type": "utility", "desc": "Beam cuts through the dark. Batteries unknown"},
-    "signal flare":      {"type": "utility", "desc": "One shot. Make it count"},
-    "binoculars":        {"type": "utility", "desc": "Scout ahead without getting close"},
-    "lockpick set":      {"type": "utility", "desc": "For doors that won't budge"},
-    "duct tape":         {"type": "utility", "desc": "Fixes everything. Almost"},
-    "plastic tarp":      {"type": "utility", "desc": "Shelter, rain catch, or makeshift stretcher"},
-    "rope":              {"type": "utility", "desc": "20 feet of nylon. Infinite uses"},
-    "glow stick":        {"type": "utility", "desc": "Soft green glow. 8 hours"},
-    "waterproof bag":    {"type": "utility", "desc": "Keeps gear dry"},
-    "car battery":       {"type": "utility", "desc": "Heavy. Could power something"},
-    "radio":             {"type": "utility", "desc": "Handheld two-way radio"},
-    "military radio":    {"type": "utility", "desc": "Long-range military frequency radio"},
-    "rubber boots":      {"type": "utility", "desc": "Keeps your feet dry in the sewers"},
-    "gas mask":          {"type": "armor", "protection": 10, "desc": "Filters out the worst of it"},
-    "hazmat suit":       {"type": "armor", "protection": 25, "desc": "Full body protection"},
-    "body armor vest":   {"type": "armor", "protection": 20, "desc": "Kevlar. Stops bites too"},
+    "matchbox":          {"type": "utility", "desc": "Half-empty. Precious in the dark", "name_zh": "火柴盒", "desc_zh": "半空的。黑暗中的珍宝"},
+    "flashlight":        {"type": "utility", "desc": "Beam cuts through the dark. Batteries unknown", "name_zh": "手电筒", "desc_zh": "光束划破黑暗。电量未知"},
+    "signal flare":      {"type": "utility", "desc": "One shot. Make it count", "name_zh": "信号弹", "desc_zh": "只有一发。用在刀刃上"},
+    "binoculars":        {"type": "utility", "desc": "Scout ahead without getting close", "name_zh": "望远镜", "desc_zh": "不用靠近就能侦察前方"},
+    "lockpick set":      {"type": "utility", "desc": "For doors that won't budge", "name_zh": "开锁工具", "desc_zh": "对付打不开的门"},
+    "duct tape":         {"type": "utility", "desc": "Fixes everything. Almost", "name_zh": "胶带", "desc_zh": "万能修补。差不多万能"},
+    "plastic tarp":      {"type": "utility", "desc": "Shelter, rain catch, or makeshift stretcher", "name_zh": "塑料布", "desc_zh": "遮蔽、接雨或临时担架"},
+    "rope":              {"type": "utility", "desc": "20 feet of nylon. Infinite uses", "name_zh": "绳索", "desc_zh": "6米尼龙绳。用途无限"},
+    "glow stick":        {"type": "utility", "desc": "Soft green glow. 8 hours", "name_zh": "荧光棒", "desc_zh": "柔和的绿光。持续8小时"},
+    "waterproof bag":    {"type": "utility", "desc": "Keeps gear dry", "name_zh": "防水袋", "desc_zh": "保持装备干燥"},
+    "car battery":       {"type": "utility", "desc": "Heavy. Could power something", "name_zh": "汽车电瓶", "desc_zh": "沉重。也许能给什么供电"},
+    "radio":             {"type": "utility", "desc": "Handheld two-way radio", "name_zh": "对讲机", "desc_zh": "手持双向对讲机"},
+    "military radio":    {"type": "utility", "desc": "Long-range military frequency radio", "name_zh": "军用电台", "desc_zh": "远程军用频率电台"},
+    "rubber boots":      {"type": "utility", "desc": "Keeps your feet dry in the sewers", "name_zh": "橡胶靴", "desc_zh": "在下水道里保持双脚干燥"},
+    "gas mask":          {"type": "armor", "protection": 10, "desc": "Filters out the worst of it", "name_zh": "防毒面具", "desc_zh": "过滤掉最糟糕的东西"},
+    "hazmat suit":       {"type": "armor", "protection": 25, "desc": "Full body protection", "name_zh": "防化服", "desc_zh": "全身防护"},
+    "body armor vest":   {"type": "armor", "protection": 20, "desc": "Kevlar. Stops bites too", "name_zh": "防弹背心", "desc_zh": "凯夫拉材质。也能防咬"},
 
     # Ammo
-    "ammo clip":         {"type": "ammo", "rounds": 12, "desc": "9mm magazine"},
-    "ammo box":          {"type": "ammo", "rounds": 30, "desc": "Mixed caliber box"},
+    "ammo clip":         {"type": "ammo", "rounds": 12, "desc": "9mm magazine", "name_zh": "弹夹", "desc_zh": "9mm弹匣"},
+    "ammo box":          {"type": "ammo", "rounds": 30, "desc": "Mixed caliber box", "name_zh": "弹药箱", "desc_zh": "混合口径弹药箱"},
 
     # Special
-    "defibrillator":     {"type": "special", "desc": "Portable AED. Could save a life — or restart a heart that shouldn't beat"},
+    "defibrillator":     {"type": "special", "desc": "Portable AED. Could save a life — or restart a heart that shouldn't beat", "name_zh": "除颤器", "desc_zh": "便携式AED。能救一条命——或重启一颗不该跳动的心"},
 }
+
+
+def _item_name(key: str) -> str:
+    """Return localized item name."""
+    if Config.LANG == "zh":
+        item = ITEMS.get(key)
+        if item and "name_zh" in item:
+            return item["name_zh"]
+    return key
+
+
+def _item_desc(key: str) -> str:
+    """Return localized item description."""
+    item = ITEMS.get(key, {})
+    if Config.LANG == "zh" and "desc_zh" in item:
+        return item["desc_zh"]
+    return item.get("desc", "")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -317,86 +569,101 @@ EVENT_POOL = {
     "exploration": [
         {
             "id": "scavenge", "weight": 30, "min_day": 1,
-            "title": "Scavenging opportunity",
+            "title": "Scavenging opportunity", "title_zh": "搜刮机会",
             "template": "You spot {item_hint} partially hidden nearby.",
+            "template_zh": "你发现附近半隐半现的{item_hint}。",
         },
         {
             "id": "zombie_encounter", "weight": 25, "min_day": 1,
-            "title": "Zombie encounter",
+            "title": "Zombie encounter", "title_zh": "丧尸遭遇",
             "template": "A {zombie_type} stumbles into view, {zombie_desc}.",
+            "template_zh": "一个{zombie_type}跌跌撞撞地出现在视野中，{zombie_desc}。",
         },
         {
             "id": "survivor_encounter", "weight": 15, "min_day": 2,
-            "title": "Survivor encounter",
+            "title": "Survivor encounter", "title_zh": "幸存者遭遇",
             "template": "A {survivor_desc} emerges from the shadows.",
+            "template_zh": "一个{survivor_desc}从阴影中走出。",
         },
         {
             "id": "locked_door", "weight": 10, "min_day": 2,
-            "title": "Locked door",
+            "title": "Locked door", "title_zh": "上锁的门",
             "template": "A reinforced door blocks your path. {door_hint}.",
+            "template_zh": "一扇加固的门挡住了你的去路。{door_hint}。",
         },
         {
             "id": "environmental_hazard", "weight": 10, "min_day": 3,
-            "title": "Environmental hazard",
+            "title": "Environmental hazard", "title_zh": "环境危险",
             "template": "The {hazard_type} ahead looks dangerous.",
+            "template_zh": "前方的{hazard_type}看起来很危险。",
         },
         {
             "id": "quiet_moment", "weight": 10, "min_day": 1,
-            "title": "A moment of calm",
+            "title": "A moment of calm", "title_zh": "片刻的宁静",
             "template": "For once, nothing is trying to kill you. The silence feels {silence_desc}.",
+            "template_zh": "难得没有什么想要你命的东西。这份寂静{silence_desc}。",
         },
     ],
     "night": [
         {
             "id": "horde_passing", "weight": 30,
-            "title": "Horde movement",
+            "title": "Horde movement", "title_zh": "尸潮涌动",
             "template": "The ground vibrates. A horde of {horde_size} shambles past your hiding spot.",
+            "template_zh": "地面在震动。{horde_size}的尸群从你的藏身处旁拖行而过。",
         },
         {
             "id": "night_visitor", "weight": 20,
-            "title": "Midnight visitor",
+            "title": "Midnight visitor", "title_zh": "午夜访客",
             "template": "A knock at the {barrier}. Three slow raps. Then silence.",
+            "template_zh": "{barrier}传来敲击声。三下，缓慢的。然后是沉默。",
         },
         {
             "id": "nightmare", "weight": 25,
-            "title": "Nightmare",
+            "title": "Nightmare", "title_zh": "噩梦",
             "template": "You jolt awake, drenched in sweat. The dream felt {dream_quality}.",
+            "template_zh": "你猛然惊醒，浑身冷汗。梦境{dream_quality}。",
         },
         {
             "id": "night_noise", "weight": 15,
-            "title": "Strange noise",
+            "title": "Strange noise", "title_zh": "诡异声响",
             "template": "A {noise_type} echoes from somewhere {direction}.",
+            "template_zh": "{direction}传来{noise_type}的回声。",
         },
         {
             "id": "night_rest", "weight": 10,
-            "title": "Restful sleep",
+            "title": "Restful sleep", "title_zh": "安稳的睡眠",
             "template": "You manage a few hours of unbroken sleep. A small mercy.",
+            "template_zh": "你总算睡了几个小时的安稳觉。难得的恩赐。",
         },
     ],
     "story": [
         {
             "id": "radio_signal",
             "trigger_day": 3, "once": True,
-            "title": "Radio signal",
+            "title": "Radio signal", "title_zh": "无线电信号",
             "template": "Static crackles. Then a voice: 'If anyone can hear this... evacuation point Delta... bridge crossing... we leave at dawn on day fifteen. This is not a drill.'",
+            "template_zh": '电台嘶嘶作响。然后一个声音:\u201c如果有人能听到\u2026\u2026撤离点Delta\u2026\u2026过桥\u2026\u2026第十五天黎明我们出发。这不是演习。\u201d',
         },
         {
             "id": "first_horde",
             "trigger_day": 5, "once": True,
-            "title": "The first horde",
+            "title": "The first horde", "title_zh": "第一波尸潮",
             "template": "The street below fills with the dead. Hundreds. Moving east like a slow river of rot. Your location is no longer safe long-term.",
+            "template_zh": "楼下的街道被死者填满。数以百计。像一条缓慢的腐烂之河向东流去。你的位置不再是长期安全的了。",
         },
         {
             "id": "military_broadcast",
             "trigger_day": 8, "once": True,
-            "title": "Military broadcast",
+            "title": "Military broadcast", "title_zh": "军事广播",
             "template": "A military frequency crackles to life: 'Napalm strike on sectors 7 through 12. All survivors move north of the river. You have 72 hours.'",
+            "template_zh": '军用频率突然活了:\u201c对7至12区实施凝固汽油弹打击。所有幸存者向河北岸转移。你们还有72小时。\u201d',
         },
         {
             "id": "final_broadcast",
             "trigger_day": 13, "once": True,
-            "title": "Final broadcast",
+            "title": "Final broadcast", "title_zh": "最后的广播",
             "template": "The radio hisses one last time: 'Last helicopter. Dawn. Day fifteen. Bridge checkpoint. No exceptions.' Then silence forever.",
+            "template_zh": '电台最后一次嘶鸣:\u201c最后一架直升机。黎明。第十五天。桥头检查站。没有例外。\u201d 然后永远沉默了。',
         },
     ],
 }
@@ -409,6 +676,14 @@ ZOMBIE_TYPES = [
     ("crawling torso", "pulling itself along with broken fingernails"),
     ("fresh one", "barely turned — you can still see who they were"),
 ]
+ZOMBIE_TYPES_ZH = [
+    ("独行尸", "拖着一条腿"),
+    ("膨胀的尸体", "皮肤绷紧，泛着油光"),
+    ("小孩大小的身影", "还背着书包"),
+    ("飞奔者", "脑袋抽搐，锁定了你的动作"),
+    ("爬行的残躯", "用断裂的指甲拖着自己前进"),
+    ("刚变异的", "才刚变——你还能看出他们生前的样子"),
+]
 
 SURVIVOR_TYPES = [
     "woman clutching a baseball bat, eyes darting",
@@ -418,14 +693,29 @@ SURVIVOR_TYPES = [
     "soldier in torn fatigues, thousand-yard stare",
     "nurse still in scrubs, hands stained red",
 ]
+SURVIVOR_TYPES_ZH = [
+    "紧握棒球棍的女人，眼神四处游移",
+    "手臂缠着绷带的少年，在发抖",
+    "拿着猎枪的老人，面颊凹陷",
+    "一对不超过十二岁的兄妹",
+    "穿着破烂军服的士兵，目光空洞",
+    "还穿着手术服的护士，双手染红",
+]
 
 HAZARD_TYPES = ["collapsed overpass", "gas leak from a ruptured pipe", "flooded basement with sparking wires", "field of broken glass and tangled wire"]
+HAZARD_TYPES_ZH = ["坍塌的立交桥", "破裂管道的燃气泄漏", "电线冒火花的积水地下室", "碎玻璃和铁丝纠缠的地带"]
 SILENCE_DESCS = ["almost worse", "like a held breath", "suspicious", "fragile", "like the world forgot you"]
+SILENCE_DESCS_ZH = ["几乎更可怕", "像屏住的呼吸", "令人起疑", "脆弱不堪", "好像世界忘记了你"]
 HORDE_SIZES = ["dozens", "at least fifty", "hundreds", "an endless column"]
+HORDE_SIZES_ZH = ["几十只", "至少五十只", "数以百计", "无尽的队列"]
 BARRIER_TYPES = ["door", "barricade", "window shutter", "fire escape gate"]
+BARRIER_TYPES_ZH = ["门", "路障", "窗板", "消防梯门"]
 DREAM_QUALITIES = ["too real", "like a memory you can't place", "like drowning in warm water", "like the world before"]
+DREAM_QUALITIES_ZH = ["太真实了", "像一段无法定位的记忆", "像溺在温水中", "像末日之前的世界"]
 NOISE_TYPES = ["scream", "gunshot", "scraping sound", "child crying", "glass shattering"]
+NOISE_TYPES_ZH = ["尖叫", "枪声", "刮擦声", "孩子的哭声", "玻璃破碎声"]
 DIRECTIONS = ["below", "to the east", "above you", "very close", "far away but echoing"]
+DIRECTIONS_ZH = ["下方", "东边", "头顶上方", "很近的地方", "远处但回声阵阵"]
 
 
 class EventSystem:
@@ -434,6 +724,7 @@ class EventSystem:
 
     def generate_event(self, state: GameState) -> dict:
         events = []
+        zh = Config.LANG == "zh"
 
         # Check story triggers
         for evt in EVENT_POOL["story"]:
@@ -443,8 +734,8 @@ class EventSystem:
                 self.triggered_story.add(evt["id"])
                 return {
                     "id": evt["id"],
-                    "title": evt["title"],
-                    "description": evt["template"],
+                    "title": evt.get("title_zh", evt["title"]) if zh else evt["title"],
+                    "description": evt.get("template_zh", evt["template"]) if zh else evt["template"],
                     "is_story": True,
                 }
 
@@ -453,6 +744,8 @@ class EventSystem:
         pool = [e for e in EVENT_POOL[pool_key] if e.get("min_day", 0) <= state.world.day]
 
         if not pool:
+            if zh:
+                return {"id": "nothing", "title": "寂静", "description": "什么都没发生。不知为何，这更令人不安。", "is_story": False}
             return {"id": "nothing", "title": "Silence", "description": "Nothing happens. Somehow that's worse.", "is_story": False}
 
         chosen = random.choices(pool, weights=[e["weight"] for e in pool], k=1)[0]
@@ -460,30 +753,39 @@ class EventSystem:
 
         return {
             "id": chosen["id"],
-            "title": chosen["title"],
+            "title": chosen.get("title_zh", chosen["title"]) if zh else chosen["title"],
             "description": description,
             "is_story": False,
         }
 
     def _fill_template(self, event: dict, state: GameState) -> str:
-        template = event["template"]
+        zh = Config.LANG == "zh"
+        template = event.get("template_zh", event["template"]) if zh else event["template"]
 
-        zt = random.choice(ZOMBIE_TYPES)
+        zt = random.choice(ZOMBIE_TYPES_ZH if zh else ZOMBIE_TYPES)
         loc = LOCATIONS.get(state.world.location, {})
+        loot = loc.get("loot_table", [])
+
+        if zh:
+            item_hint_val = f"看起来像是{random.choice(loot)}的东西" if loot else "废墟中的什么东西"
+            door_hint_val = "你的开锁工具也许能派上用场" if "lockpick set" in state.player.inventory else "一套开锁工具可能有用"
+        else:
+            item_hint_val = f"what looks like a {random.choice(loot)}" if loot else "something in the rubble"
+            door_hint_val = "Your lockpick set could open this" if "lockpick set" in state.player.inventory else "A lockpick set might help"
 
         replacements = {
             "zombie_type": zt[0],
             "zombie_desc": zt[1],
-            "survivor_desc": random.choice(SURVIVOR_TYPES),
-            "item_hint": f"what looks like a {random.choice(loc.get('loot_table', ['something useful']))}" if loc.get("loot_table") else "something in the rubble",
-            "hazard_type": random.choice(HAZARD_TYPES),
-            "silence_desc": random.choice(SILENCE_DESCS),
-            "horde_size": random.choice(HORDE_SIZES),
-            "barrier": random.choice(BARRIER_TYPES),
-            "dream_quality": random.choice(DREAM_QUALITIES),
-            "noise_type": random.choice(NOISE_TYPES),
-            "direction": random.choice(DIRECTIONS),
-            "door_hint": "A lockpick set might help" if "lockpick set" not in state.player.inventory else "Your lockpick set could open this",
+            "survivor_desc": random.choice(SURVIVOR_TYPES_ZH if zh else SURVIVOR_TYPES),
+            "item_hint": item_hint_val,
+            "hazard_type": random.choice(HAZARD_TYPES_ZH if zh else HAZARD_TYPES),
+            "silence_desc": random.choice(SILENCE_DESCS_ZH if zh else SILENCE_DESCS),
+            "horde_size": random.choice(HORDE_SIZES_ZH if zh else HORDE_SIZES),
+            "barrier": random.choice(BARRIER_TYPES_ZH if zh else BARRIER_TYPES),
+            "dream_quality": random.choice(DREAM_QUALITIES_ZH if zh else DREAM_QUALITIES),
+            "noise_type": random.choice(NOISE_TYPES_ZH if zh else NOISE_TYPES),
+            "direction": random.choice(DIRECTIONS_ZH if zh else DIRECTIONS),
+            "door_hint": door_hint_val,
         }
 
         for key, val in replacements.items():
@@ -683,275 +985,432 @@ class RulesEngine:
 # LLM INTERFACE
 # ══════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = """You are the narrator of DEAD STATIC, a grim zombie apocalypse text adventure game.
+SYSTEM_PROMPT_EN = """You are the narrator of a zombie apocalypse text adventure. Write in second person, present tense. Short sentences. Grim tone. Show what the player sees, hears, smells.
 
-VOICE & STYLE:
-- Second person, present tense ("You hear...", "The door creaks...")
-- Terse, Cormac McCarthy meets The Road. Short sentences. No purple prose.
-- Show, don't tell. Describe what the player SEES, HEARS, SMELLS.
-- Occasional dark humor is fine. Hope is rare and earned.
-- Never break character. Never mention game mechanics directly.
+RULES:
+1. If a player action is given, your FIRST sentences must describe what happened when they did it. Then describe the new scene.
+2. Only describe what the player SEES. Do NOT assume the player picks up, uses, or does anything unless their action says so.
+3. Write 80-200 words, then end with exactly 3 choices:
+[A] action option
+[B] action option
+[C] action option
+Each choice must be a realistic action the player can take right now. Never break character."""
 
-STRICT RULES:
-- Describe ONLY the current scene based on the provided game state.
-- NEVER invent items the player doesn't have.
-- NEVER advance the story beyond the current moment.
-- NEVER claim the player did something they didn't choose.
-- Keep responses between 80-200 words (before the choices).
-- If the player is injured/infected, weave symptoms into the narration naturally.
-- Adapt tone to morale: high morale = grim determination, low = despair creeping in.
+SYSTEM_PROMPT_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人称、现在时写作。短句为主，冷硬风格。描述玩家看到、听到、闻到的一切。必须用中文回复。
 
-CRITICAL — CHOICE FORMAT:
-You MUST end EVERY response with EXACTLY 3 choices. Use this EXACT format with square brackets:
-
-[A] First action option
-[B] Second action option
-[C] Third action option
-
-Each choice must be a short, concrete action (5-15 words). One should be risky, one cautious.
-Do NOT use any other format like "A)", "1.", "Option A:", or bullet points.
-Do NOT put anything after the three choices.
-
-EXAMPLE OUTPUT:
-The hallway stretches ahead, dark and silent. Glass crunches under your boots. Something moved behind the far door — a shadow, quick and wrong. The air tastes like copper. Your flashlight flickers once, twice, then holds.
-
-[A] Push through the door with weapon raised
-[B] Retreat back the way you came
-[C] Kill the flashlight and listen in the dark"""
+规则：
+1. 如果给出了玩家的行动，你的开头几句必须描述那个行动的后果。然后再描述新场景。
+2. 只描述玩家看到的。不要假设玩家拿起、使用或做了任何事，除非行动中明确说了。
+3. 写80-200字叙事，然后以恰好3个选项结尾：
+[A] 行动选项
+[B] 行动选项
+[C] 行动选项
+每个选项必须是玩家现在能做的合理行动。不要打破角色。"""
 
 
-def build_prompt(state: GameState, event: dict, action_context: str = "") -> str:
+def _get_system_prompt() -> str:
+    return SYSTEM_PROMPT_ZH if Config.LANG == "zh" else SYSTEM_PROMPT_EN
+
+
+def build_prompt(state: GameState, event: dict,
+                 action_context: str = "", prev_narrative: str = "") -> str:
+    """Build prompt optimized for small (1-3B) models.
+
+    The prompt reads like a story-so-far that the model continues.
+    When there's a player action, the prompt explicitly tells the model
+    to start by describing what happened.
+    """
     p = state.player
     w = state.world
     loc = LOCATIONS.get(w.location, {})
+    zh = Config.LANG == "zh"
 
-    # Status summary
-    status_warnings = []
-    if p.health < 30: status_warnings.append("CRITICAL: Health dangerously low")
-    if p.hunger < 20: status_warnings.append("Starving")
-    if p.thirst < 20: status_warnings.append("Severely dehydrated")
-    if p.infection > 0: status_warnings.append(f"Infection spreading ({p.infection}%)")
-    if p.morale < 20: status_warnings.append("On the verge of breaking down")
+    loc_desc = loc.get("desc_zh", loc.get("description", "")) if zh else loc.get("description", "")
+    weapon_str = _item_name(p.equipped_weapon) if p.equipped_weapon else t("bare hands")
 
-    warnings_str = " | ".join(status_warnings) if status_warnings else "Stable"
+    # Condense previous narrative to last 2 sentences
+    prev_summary = ""
+    if prev_narrative:
+        sentences = [s.strip() for s in re.split(r'[.。!！?？\n]', prev_narrative) if s.strip()]
+        prev_summary = ". ".join(sentences[-2:]) + "." if sentences else ""
 
-    connections = loc.get("connections", [])
-
-    prompt = f"""[GAME STATE]
-Day {w.day} — {w.time_of_day.value} — {w.weather.value}
-Location: {w.location} ({loc.get('description', '')})
-Threat Level: {w.threat_level}/10
-Connected Areas: {', '.join(connections)}
-
-[PLAYER STATUS] {warnings_str}
-Health: {p.health}/100 | Hunger: {p.hunger}/100 | Thirst: {p.thirst}/100
-Stamina: {p.stamina}/100 | Morale: {p.morale}/100 | Infection: {p.infection}/100
-Weapon: {p.equipped_weapon or 'bare hands'}
-Inventory: {', '.join(p.inventory) if p.inventory else 'empty'}
-
-[CURRENT EVENT]
-{event['description']}
-
-[RECENT HISTORY]
-{chr(10).join(state.history[-Config.MAX_HISTORY:]) if state.history else 'You woke up alone in a ransacked apartment. The city outside is dead.'}
-"""
-
-    if action_context:
-        prompt += f"\n[PLAYER ACTION]\n{action_context}\n\nNarrate the result of this action and present the next scene with 3 choices."
+    # Status alerts (only noteworthy conditions)
+    alerts = []
+    if zh:
+        if p.health < 30: alerts.append("重伤")
+        if p.hunger < 20: alerts.append("饥饿")
+        if p.thirst < 20: alerts.append("脱水")
+        if p.infection > 0: alerts.append(f"感染{p.infection}%")
+        if p.morale < 20: alerts.append("崩溃边缘")
     else:
-        prompt += "\nDescribe the current scene and present 3 choices."
+        if p.health < 30: alerts.append("badly wounded")
+        if p.hunger < 20: alerts.append("starving")
+        if p.thirst < 20: alerts.append("dehydrated")
+        if p.infection > 0: alerts.append(f"infected {p.infection}%")
+        if p.morale < 20: alerts.append("breaking down")
+    alert_str = ", ".join(alerts)
 
-    return prompt
+    if zh:
+        lines = []
+        if action_context and prev_summary:
+            lines.append(f"故事到目前为止: {prev_summary} 然后玩家决定{action_context}。")
+            lines.append(f"新场景: {w.location}——{loc_desc}")
+        else:
+            lines.append(f"场景: {w.location}——{loc_desc}")
+        lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
+        if alert_str:
+            lines.append(f"状态: {alert_str}")
+        lines.append(f"{event['description']}")
+        if action_context:
+            lines.append("从玩家行动的后果开始写起。")
+    else:
+        lines = []
+        if action_context and prev_summary:
+            lines.append(f"Story so far: {prev_summary} Then the player decided to {action_context}.")
+            lines.append(f"New scene: {w.location} — {loc_desc}")
+        else:
+            lines.append(f"Scene: {w.location} — {loc_desc}")
+        lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
+        if alert_str:
+            lines.append(f"Status: {alert_str}")
+        lines.append(f"{event['description']}")
+        if action_context:
+            lines.append("Start by describing what happened when the player did this.")
+
+    return "\n".join(lines)
 
 
-class OllamaHelper:
-    """Diagnostic and utility methods for Ollama backend."""
+def _print_msg(console, text, style=None):
+    """Helper to print via Rich console or plain print."""
+    if console and HAS_RICH and style:
+        console.print(f"  [{style}]{text}[/]")
+    elif console and HAS_RICH:
+        console.print(f"  {text}")
+    else:
+        print(f"  {text}")
 
-    BASE_URL = "http://localhost:11434"
+
+def _download_file(url: str, dest: str, console=None, label: str = ""):
+    """Download a file with progress display."""
+    _print_msg(console, f"Downloading {label or url.split('/')[-1]}...")
+    resp = requests.get(url, stream=True, timeout=30)
+    resp.raise_for_status()
+    total = int(resp.headers.get("content-length", 0))
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+    downloaded = 0
+    with open(dest, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+            f.write(chunk)
+            downloaded += len(chunk)
+            if total > 0:
+                pct = downloaded * 100 // total
+                mb = downloaded / 1_000_000
+                total_mb = total / 1_000_000
+                print(f"\r  [{pct:3d}%] {mb:.0f} / {total_mb:.0f} MB", end="", flush=True)
+    print()
+
+
+class RuntimeManager:
+    """Manages downloading llama-server binary and GGUF model."""
+
+    # ── Server binary ──
 
     @staticmethod
-    def is_running() -> bool:
-        """Check if Ollama server is reachable."""
-        if not HAS_REQUESTS:
-            return False
+    def is_server_installed() -> bool:
+        return os.path.isfile(Config.LLAMA_SERVER_EXE)
+
+    @staticmethod
+    def _detect_nvidia_gpu() -> bool:
+        """Check if an NVIDIA GPU is available."""
         try:
-            resp = requests.get(f"{OllamaHelper.BASE_URL}/api/tags", timeout=5)
+            result = subprocess.run(
+                ["nvidia-smi"], capture_output=True, timeout=5,
+                creationflags=0x08000000 if os.name == "nt" else 0,  # CREATE_NO_WINDOW
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def download_server(console=None) -> bool:
+        """Download the llama-server binary from GitHub releases."""
+        has_gpu = RuntimeManager._detect_nvidia_gpu()
+        if has_gpu:
+            _print_msg(console, "NVIDIA GPU detected — downloading CUDA build...", "bold yellow")
+            zip_names = [Config.LLAMA_CPP_CUDA_ZIP, Config.LLAMA_CPP_CUDART_ZIP]
+        else:
+            _print_msg(console, "No NVIDIA GPU — downloading CPU build...", "bold yellow")
+            zip_names = [Config.LLAMA_CPP_CPU_ZIP]
+
+        os.makedirs(Config.RUNTIME_DIR, exist_ok=True)
+
+        try:
+            for zip_name in zip_names:
+                url = f"{Config.LLAMA_CPP_RELEASE_URL}/{zip_name}"
+                zip_path = os.path.join(Config.RUNTIME_DIR, zip_name)
+                _download_file(url, zip_path, console, zip_name)
+
+                # Extract
+                _print_msg(console, f"Extracting {zip_name}...")
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(Config.RUNTIME_DIR)
+                os.remove(zip_path)
+
+            if not os.path.isfile(Config.LLAMA_SERVER_EXE):
+                _print_msg(console, "✗ llama-server.exe not found after extraction", "bold red")
+                return False
+
+            _print_msg(console, "✓ llama-server installed!", "bold green")
+            return True
+        except Exception as e:
+            _print_msg(console, f"✗ Download failed: {e}", "bold red")
+            return False
+
+    # ── Model ──
+
+    @staticmethod
+    def is_model_downloaded() -> bool:
+        return os.path.isfile(Config.GGUF_MODEL_PATH)
+
+    @staticmethod
+    def get_model_size_str() -> str:
+        if not os.path.isfile(Config.GGUF_MODEL_PATH):
+            return "not downloaded"
+        size = os.path.getsize(Config.GGUF_MODEL_PATH)
+        if size > 1_000_000_000:
+            return f"{size / 1_000_000_000:.2f} GB"
+        return f"{size / 1_000_000:.0f} MB"
+
+    @staticmethod
+    def download_model(console=None) -> bool:
+        """Download the GGUF model from HuggingFace."""
+        _print_msg(console, f"Downloading AI model: {Config.GGUF_FILENAME} (~1.05 GB)...", "bold yellow")
+        try:
+            from huggingface_hub import hf_hub_download
+            os.makedirs(Config.MODEL_DIR, exist_ok=True)
+            hf_hub_download(
+                repo_id=Config.HF_REPO_ID,
+                filename=Config.GGUF_FILENAME,
+                local_dir=Config.MODEL_DIR,
+            )
+            _print_msg(console, "✓ Model downloaded!", "bold green")
+            return True
+        except ImportError:
+            # Fallback: direct download without huggingface_hub
+            _print_msg(console, "huggingface-hub not found, using direct download...", "dim")
+            try:
+                url = f"https://huggingface.co/{Config.HF_REPO_ID}/resolve/main/{Config.GGUF_FILENAME}"
+                _download_file(url, Config.GGUF_MODEL_PATH, console, Config.GGUF_FILENAME)
+                _print_msg(console, "✓ Model downloaded!", "bold green")
+                return True
+            except Exception as e:
+                _print_msg(console, f"✗ Download failed: {e}", "bold red")
+                return False
+        except Exception as e:
+            _print_msg(console, f"✗ Download failed: {e}", "bold red")
+            return False
+
+    # ── Server process ──
+
+    _server_process = None
+
+    _server_log_path = os.path.join(_BASE_DIR, "llama_server.log")
+
+    @classmethod
+    def start_server(cls, console=None) -> bool:
+        """Start llama-server as a background subprocess."""
+        if cls._is_server_running():
+            _print_msg(console, "✓ Server already running", "bold green")
+            return True
+
+        _print_msg(console, "Starting llama-server...", "dim")
+
+        cmd = [
+            Config.LLAMA_SERVER_EXE,
+            "--model", Config.GGUF_MODEL_PATH,
+            "--host", Config.SERVER_HOST,
+            "--port", str(Config.SERVER_PORT),
+            "--ctx-size", str(Config.N_CTX),
+            "--n-gpu-layers", str(Config.N_GPU_LAYERS),
+        ]
+
+        _print_msg(console, f"Command: {' '.join(cmd)}", "dim")
+
+        try:
+            # Write server output to log file for debugging
+            cls._log_file = open(cls._server_log_path, "w", encoding="utf-8")
+            cls._server_process = subprocess.Popen(
+                cmd,
+                stdout=cls._log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=0x00000008 if os.name == "nt" else 0,  # DETACHED_PROCESS
+            )
+            # Register cleanup on exit
+            atexit.register(cls.stop_server)
+
+            # Wait for server to be ready (up to 60 seconds)
+            _print_msg(console, "Waiting for model to load...", "dim")
+            for i in range(120):
+                time.sleep(0.5)
+                if cls._is_server_running():
+                    _print_msg(console, "✓ Server ready!", "bold green")
+                    return True
+                # Check if process died
+                if cls._server_process.poll() is not None:
+                    _print_msg(console, "✗ Server process exited unexpectedly", "bold red")
+                    # Show last few lines of log
+                    cls._log_file.close()
+                    try:
+                        with open(cls._server_log_path, "r", encoding="utf-8") as f:
+                            log_tail = f.read()[-500:]
+                        _print_msg(console, f"Server log:\n{log_tail}", "dim")
+                    except Exception:
+                        pass
+                    return False
+                if (i + 1) % 10 == 0:
+                    _print_msg(console, f"  Still loading... ({(i+1)//2}s)", "dim")
+
+            _print_msg(console, "✗ Server failed to start (timeout 60s)", "bold red")
+            return False
+        except Exception as e:
+            _print_msg(console, f"✗ Failed to start server: {e}", "bold red")
+            return False
+
+    @classmethod
+    def stop_server(cls):
+        """Stop the llama-server subprocess."""
+        if cls._server_process and cls._server_process.poll() is None:
+            cls._server_process.terminate()
+            try:
+                cls._server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                cls._server_process.kill()
+            cls._server_process = None
+        if hasattr(cls, '_log_file') and cls._log_file and not cls._log_file.closed:
+            cls._log_file.close()
+
+    @staticmethod
+    def _is_server_running() -> bool:
+        """Check if the llama-server is responding."""
+        try:
+            resp = requests.get(f"{Config.SERVER_URL}/health", timeout=2)
             return resp.status_code == 200
         except Exception:
             return False
 
-    @staticmethod
-    def list_models() -> list:
-        """Return list of installed model names, e.g. ['qwen2.5:3b', 'llama3.2:3b']."""
-        if not HAS_REQUESTS:
-            return []
-        try:
-            resp = requests.get(f"{OllamaHelper.BASE_URL}/api/tags", timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            models = []
-            for m in data.get("models", []):
-                name = m.get("name", "") or m.get("model", "")
-                if name:
-                    models.append(name)
-            return models
-        except Exception:
-            return []
-
-    @staticmethod
-    def try_start_server() -> bool:
-        """Attempt to start Ollama server in the background."""
-        import subprocess
-        try:
-            # Try common install locations on Windows, then PATH
-            ollama_paths = ["ollama", "ollama.exe"]
-            if os.name == 'nt':
-                local_app = os.environ.get("LOCALAPPDATA", "")
-                if local_app:
-                    ollama_paths.insert(0, os.path.join(local_app, "Programs", "Ollama", "ollama.exe"))
-                program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
-                ollama_paths.insert(1, os.path.join(program_files, "Ollama", "ollama.exe"))
-
-            for path in ollama_paths:
-                try:
-                    subprocess.Popen(
-                        [path, "serve"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=0x00000008 if os.name == 'nt' else 0,  # DETACHED_PROCESS on Windows
-                    )
-                    # Wait for server to come up
-                    for _ in range(10):
-                        time.sleep(1)
-                        if OllamaHelper.is_running():
-                            return True
-                    return False
-                except FileNotFoundError:
-                    continue
-            return False
-        except Exception:
-            return False
-
-    @staticmethod
-    def validate_model(model_name: str) -> dict:
-        """Check if a specific model is available. Returns status dict."""
-        models = OllamaHelper.list_models()
-        if not models:
-            return {"valid": False, "reason": "no_models", "available": []}
-
-        # Exact match
-        if model_name in models:
-            return {"valid": True, "model": model_name, "available": models}
-
-        # Partial match (e.g., user has 'qwen2.5:3b-instruct' but config says 'qwen2.5:3b')
-        partial = [m for m in models if model_name.split(":")[0] in m]
-        if partial:
-            return {"valid": False, "reason": "partial_match", "suggestions": partial, "available": models}
-
-        return {"valid": False, "reason": "not_found", "available": models}
+    # ── Diagnostics ──
 
     @staticmethod
     def full_diagnostics() -> str:
-        """Return a human-readable diagnostic string."""
-        lines = []
-        lines.append("─── Ollama Diagnostics ───")
+        lines = ["─── Runtime Diagnostics ───"]
 
-        if not HAS_REQUESTS:
-            lines.append("✗ 'requests' library not installed")
-            return "\n".join(lines)
-
-        if OllamaHelper.is_running():
-            lines.append("✓ Ollama server is running")
+        # Server binary
+        if RuntimeManager.is_server_installed():
+            lines.append(f"✓ llama-server installed at: {Config.RUNTIME_DIR}")
         else:
-            lines.append("✗ Ollama server is NOT running")
-            lines.append("  → Try running 'ollama serve' in a terminal")
-            return "\n".join(lines)
+            lines.append("✗ llama-server NOT installed")
+            lines.append("  → Will download automatically on first game start")
 
-        models = OllamaHelper.list_models()
-        if models:
-            lines.append(f"✓ Installed models ({len(models)}):")
-            for m in models:
-                marker = " ◀ selected" if m == Config.OLLAMA_MODEL else ""
-                lines.append(f"    • {m}{marker}")
+        # GPU
+        if RuntimeManager._detect_nvidia_gpu():
+            lines.append("✓ NVIDIA GPU detected (CUDA acceleration)")
         else:
-            lines.append("✗ No models installed")
-            lines.append("  → Run: ollama pull qwen2.5:3b")
+            lines.append("△ No NVIDIA GPU — using CPU mode")
 
-        check = OllamaHelper.validate_model(Config.OLLAMA_MODEL)
-        if check["valid"]:
-            lines.append(f"✓ Selected model '{Config.OLLAMA_MODEL}' is ready")
+        # Model
+        if RuntimeManager.is_model_downloaded():
+            lines.append(f"✓ Model downloaded ({RuntimeManager.get_model_size_str()})")
         else:
-            lines.append(f"✗ Selected model '{Config.OLLAMA_MODEL}' NOT FOUND")
-            if check["reason"] == "partial_match":
-                lines.append(f"  → Did you mean: {', '.join(check['suggestions'])}?")
-            elif check["reason"] == "not_found":
-                lines.append(f"  → Available: {', '.join(check['available'])}")
-                lines.append(f"  → Run: ollama pull {Config.OLLAMA_MODEL}")
+            lines.append("✗ Model NOT downloaded")
+            lines.append("  → Will download automatically on first game start")
+
+        # Server status
+        if RuntimeManager._is_server_running():
+            lines.append(f"✓ Server running at {Config.SERVER_URL}")
+        else:
+            lines.append(f"△ Server not running (starts with game)")
 
         return "\n".join(lines)
 
 
 class LLMClient:
-    def __init__(self):
-        self.backend = Config.LLM_BACKEND
-        self.llm = None
-
-        if self.backend == "llama_cpp":
-            if not HAS_LLAMA_CPP:
-                raise ImportError("llama-cpp-python not installed. Run: pip install llama-cpp-python")
-            self.llm = Llama(
-                model_path=Config.GGUF_MODEL_PATH,
-                n_ctx=Config.N_CTX,
-                n_gpu_layers=Config.N_GPU_LAYERS,
-                verbose=False,
-            )
-        elif self.backend == "ollama":
-            if not HAS_REQUESTS:
-                raise ImportError("requests not installed. Run: pip install requests")
+    """Communicates with llama-server via OpenAI-compatible HTTP API."""
 
     def generate(self, system: str, prompt: str) -> str:
-        if self.backend == "ollama":
-            return self._ollama_generate(system, prompt)
-        elif self.backend == "llama_cpp":
-            return self._llama_cpp_generate(system, prompt)
-        else:
-            raise ValueError(f"Unknown backend: {self.backend}")
+        try:
+            # Append /no_think to disable Qwen3's thinking mode
+            prompt_with_flag = prompt + "\n/no_think"
 
-    def _ollama_generate(self, system: str, prompt: str) -> str:
-        payload = {
-            "model": Config.OLLAMA_MODEL,
-            "system": system,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt_with_flag},
+                ],
+                "max_tokens": Config.LLM_MAX_TOKENS,
                 "temperature": Config.LLM_TEMPERATURE,
                 "top_p": Config.LLM_TOP_P,
-                "num_predict": Config.LLM_MAX_TOKENS,
-            },
-        }
-        try:
-            resp = requests.post(Config.OLLAMA_URL, json=payload, timeout=120)
+            }
+            resp = requests.post(
+                f"{Config.SERVER_URL}/v1/chat/completions",
+                json=payload,
+                timeout=120,
+            )
             resp.raise_for_status()
-            return resp.json().get("response", "").strip()
-        except requests.ConnectionError:
-            return "The silence stretches on. Your radio crackles but finds nothing.\n\n[A] Try again\n[B] Check connection\n[C] Quit"
-        except requests.HTTPError as e:
-            if resp.status_code == 404:
-                return "Model 'dolphin-phi' not found. Run: ollama pull dolphin-phi\n\n[A] Try again\n[B] Retry\n[C] Quit"
-            return f"Ollama error ({resp.status_code}). Check 'ollama list' in terminal.\n\n[A] Try again\n[B] Retry\n[C] Quit"
-        except Exception as e:
-            return f"LLM error: {e}\n\n[A] Try again\n[B] Retry\n[C] Quit"
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            content = (msg.get("content") or "").strip()
 
-    def _llama_cpp_generate(self, system: str, prompt: str) -> str:
-        full_prompt = f"<|system|>\n{system}<|end|>\n<|user|>\n{prompt}<|end|>\n<|assistant|>\n"
-        output = self.llm(
-            full_prompt,
-            max_tokens=Config.LLM_MAX_TOKENS,
-            temperature=Config.LLM_TEMPERATURE,
-            top_p=Config.LLM_TOP_P,
-            stop=["<|end|>", "<|user|>"],
-        )
-        return output["choices"][0]["text"].strip()
+            # Fallback: if content is empty but reasoning_content exists,
+            # extract usable text from the model's thinking output
+            if not content:
+                reasoning = (msg.get("reasoning_content") or "").strip()
+                if reasoning:
+                    content = self._extract_from_reasoning(reasoning)
+
+            if content:
+                return content
+            else:
+                if Config.LANG == "zh":
+                    return "电台嗡嗡作响。信号出了问题。\n\n[A] 再试一次\n[B] 四处看看\n[C] 等待"
+                return "The radio hums with static. Something is wrong with the signal.\n\n[A] Try again\n[B] Look around\n[C] Wait"
+
+        except requests.ConnectionError:
+            if Config.LANG == "zh":
+                return "寂静持续蔓延。你的电台嘶嘶作响，但什么也没收到。\n\n[A] 再试一次\n[B] 四处看看\n[C] 等待"
+            return "The silence stretches on. Your radio crackles but finds nothing.\n\n[A] Try again\n[B] Look around\n[C] Wait"
+        except Exception as e:
+            if Config.LANG == "zh":
+                return f"寂静持续蔓延。你的思绪飘散了…（LLM错误: {e}）\n\n[A] 再试一次\n[B] 四处看看\n[C] 等待"
+            return f"The silence stretches on. Your mind drifts... (LLM error: {e})\n\n[A] Try again\n[B] Look around\n[C] Wait"
+
+    @staticmethod
+    def _extract_from_reasoning(reasoning: str) -> str:
+        """Try to extract narrative + choices from Qwen3's reasoning output."""
+        # Look for quoted narrative or choice patterns in the reasoning
+        # The model often drafts its response inside the reasoning block
+        lines = reasoning.split("\n")
+        # Find lines that look like narrative or choices (e.g., [A], [B], [C])
+        narrative_lines = []
+        choice_lines = []
+        in_draft = False
+        for line in lines:
+            stripped = line.strip()
+            # Detect choice patterns
+            if re.match(r'^\[?[A-C]\]?\s*[:.)]\s*.+', stripped, re.IGNORECASE):
+                choice_lines.append(stripped)
+                in_draft = True
+            elif stripped.startswith('"') or in_draft or len(stripped) > 60:
+                # Likely narrative text
+                clean = stripped.strip('"').strip("'")
+                if clean and not clean.startswith(("Okay", "Let me", "I need", "The user", "So ")):
+                    narrative_lines.append(clean)
+        if narrative_lines or choice_lines:
+            result = "\n".join(narrative_lines[-6:])  # last ~6 lines of narrative
+            if choice_lines:
+                result += "\n\n" + "\n".join(choice_lines[-3:])
+            return result.strip()
+        return ""
 
 
 def parse_llm_output(raw: str, state: GameState = None) -> dict:
@@ -962,8 +1421,9 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
       1. text, 1) text, - text, * text, numbered lists, etc.
     """
     if not raw or not raw.strip():
+        fallback_narrative = "世界屏住了呼吸。万物静止。" if Config.LANG == "zh" else "The world holds its breath. Nothing moves."
         return {
-            "narrative": "The world holds its breath. Nothing moves.",
+            "narrative": fallback_narrative,
             "options": _generate_fallback_choices(state),
             "parse_failed": True,
         }
@@ -1090,7 +1550,10 @@ def _clean_choice(text: str) -> str:
 
 def _generate_fallback_choices(state: GameState = None) -> dict:
     """Generate context-aware fallback choices based on game state."""
+    zh = Config.LANG == "zh"
     if state is None:
+        if zh:
+            return {"A": "搜索周围区域", "B": "保持警觉，观察四周", "C": "休息，保存体力"}
         return {
             "A": "Search the immediate area",
             "B": "Stay alert and observe",
@@ -1105,37 +1568,37 @@ def _generate_fallback_choices(state: GameState = None) -> dict:
     # Choice A: Always an exploration/action option
     if connections:
         target = random.choice(connections)
-        options["A"] = f"Head toward {target}"
+        options["A"] = f"前往{target}" if zh else f"Head toward {target}"
     else:
-        options["A"] = "Search the surrounding area"
+        options["A"] = "搜索周围区域" if zh else "Search the surrounding area"
 
     # Choice B: Context-sensitive
     if p.health < 40 and any(ITEMS.get(i, {}).get("type") == "medical" for i in p.inventory):
         med = next(i for i in p.inventory if ITEMS.get(i, {}).get("type") == "medical")
-        options["B"] = f"Use your {med} to patch up"
+        options["B"] = f"用{med}包扎伤口" if zh else f"Use your {med} to patch up"
     elif p.hunger < 30 and any(ITEMS.get(i, {}).get("type") == "food" for i in p.inventory):
         food = next(i for i in p.inventory if ITEMS.get(i, {}).get("type") == "food")
-        options["B"] = f"Eat the {food}"
+        options["B"] = f"吃掉{food}" if zh else f"Eat the {food}"
     elif p.thirst < 30 and any(ITEMS.get(i, {}).get("type") == "water" for i in p.inventory):
         water = next(i for i in p.inventory if ITEMS.get(i, {}).get("type") == "water")
-        options["B"] = f"Drink the {water}"
+        options["B"] = f"喝掉{water}" if zh else f"Drink the {water}"
     elif state.world.threat_level >= 6:
-        options["B"] = "Find a hiding spot and stay quiet"
+        options["B"] = "找个藏身处，保持安静" if zh else "Find a hiding spot and stay quiet"
     else:
-        options["B"] = "Scavenge for supplies nearby"
+        options["B"] = "搜刮附近的物资" if zh else "Scavenge for supplies nearby"
 
     # Choice C: Always a cautious/rest option
     if p.stamina < 30:
-        options["C"] = "Find shelter and rest"
+        options["C"] = "找个庇护所休息" if zh else "Find shelter and rest"
     elif state.world.time_of_day == TimeOfDay.NIGHT:
-        options["C"] = "Barricade the entrance and sleep"
+        options["C"] = "加固入口，睡一会儿" if zh else "Barricade the entrance and sleep"
     else:
-        options["C"] = "Stay put and observe your surroundings"
+        options["C"] = "待在原地，观察周围" if zh else "Stay put and observe your surroundings"
 
     return options
 
 
-REPAIR_PROMPT = """Your previous response did not include action choices in the correct format.
+REPAIR_PROMPT_EN = """Your previous response did not include action choices in the correct format.
 Based on the scene you just described, provide EXACTLY 3 choices in this format:
 
 [A] first action
@@ -1143,6 +1606,19 @@ Based on the scene you just described, provide EXACTLY 3 choices in this format:
 [C] third action
 
 Only output the three choices. Nothing else."""
+
+REPAIR_PROMPT_ZH = """你之前的回复没有包含正确格式的行动选项。
+根据你刚才描述的场景，请提供恰好3个选项，使用以下格式：
+
+[A] 第一个行动
+[B] 第二个行动
+[C] 第三个行动
+
+只输出三个选项。不要输出其他内容。"""
+
+
+def _get_repair_prompt() -> str:
+    return REPAIR_PROMPT_ZH if Config.LANG == "zh" else REPAIR_PROMPT_EN
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1170,14 +1646,14 @@ class Display:
         """
         if HAS_RICH:
             self.console.print(title, style="bold red")
-            self.console.print("              A Zombie Apocalypse Text Adventure", style="dim white")
-            self.console.print("              Powered by Local LLM\n", style="dim")
-            self.console.print("    [1] New Game    [2] Load Game    [3] Settings    [Q] Quit\n", style="bold")
+            self.console.print(f"              {t('A Zombie Apocalypse Text Adventure')}", style="dim white")
+            self.console.print(f"              {t('Powered by Local LLM')}\n", style="dim")
+            self.console.print(f"    {t('[1] New Game    [2] Load Game    [3] Settings    [Q] Quit')}\n", style="bold")
         else:
             print(title)
-            print("              A Zombie Apocalypse Text Adventure")
-            print("              Powered by Local LLM\n")
-            print("    [1] New Game    [2] Load Game    [3] Settings    [Q] Quit\n")
+            print(f"              {t('A Zombie Apocalypse Text Adventure')}")
+            print(f"              {t('Powered by Local LLM')}\n")
+            print(f"    {t('[1] New Game    [2] Load Game    [3] Settings    [Q] Quit')}\n")
 
     def print_status_bar(self, state: GameState):
         p = state.player
@@ -1192,17 +1668,28 @@ class Display:
             if val <= thresholds[1]: return "yellow"
             return "green"
 
+        zh = Config.LANG == "zh"
+        time_str = t(w.time_of_day.value)
+        weather_str = t(w.weather.value)
+        weapon_str = p.equipped_weapon or t("bare hands")
+        threat_label = t("Threat:")
+
         if HAS_RICH:
             # Top bar
             header = Text()
-            header.append(f" DAY {w.day} ", style="bold white on red")
-            header.append(f" {w.time_of_day.value} ", style="bold white on dark_red")
-            header.append(f" {w.weather.value} ", style="dim")
-            header.append(f" ☠ Threat: {w.threat_level}/10 ", style="bold red" if w.threat_level >= 7 else "yellow" if w.threat_level >= 4 else "green")
+            if zh:
+                header.append(f" {t('DAY', **{'0': str(w.day)})} ", style="bold white on red")
+            else:
+                header.append(f" DAY {w.day} ", style="bold white on red")
+            header.append(f" {time_str} ", style="bold white on dark_red")
+            header.append(f" {weather_str} ", style="dim")
+            header.append(f" ☠ {threat_label} {w.threat_level}/10 ", style="bold red" if w.threat_level >= 7 else "yellow" if w.threat_level >= 4 else "green")
             self.console.print(header)
 
             # Location
-            self.console.print(f" 📍 {w.location}", style="bold cyan")
+            loc_data = LOCATIONS.get(w.location, {})
+            loc_name = w.location
+            self.console.print(f" 📍 {loc_name}", style="bold cyan")
 
             # Stats
             stats = Table(box=None, padding=(0, 1), show_header=False, expand=True)
@@ -1210,30 +1697,48 @@ class Display:
             stats.add_column(width=25)
             stats.add_column(width=25)
 
-            stats.add_row(
-                Text(f"❤ HP  {bar(p.health)} {p.health}", style=color_val(p.health)),
-                Text(f"🍖 Fed {bar(p.hunger)} {p.hunger}", style=color_val(p.hunger)),
-                Text(f"💧 H₂O {bar(p.thirst)} {p.thirst}", style=color_val(p.thirst)),
-            )
-            stats.add_row(
-                Text(f"⚡ Stm {bar(p.stamina)} {p.stamina}", style=color_val(p.stamina)),
-                Text(f"🧠 Mor {bar(p.morale)} {p.morale}", style=color_val(p.morale)),
-                Text(f"🦠 Inf {bar(p.infection)} {p.infection}", style="bold red" if p.infection > 0 else "green"),
-            )
+            if zh:
+                stats.add_row(
+                    Text(f"❤ 生命 {bar(p.health)} {p.health}", style=color_val(p.health)),
+                    Text(f"🍖 饥饿 {bar(p.hunger)} {p.hunger}", style=color_val(p.hunger)),
+                    Text(f"💧 口渴 {bar(p.thirst)} {p.thirst}", style=color_val(p.thirst)),
+                )
+                stats.add_row(
+                    Text(f"⚡ 体力 {bar(p.stamina)} {p.stamina}", style=color_val(p.stamina)),
+                    Text(f"🧠 士气 {bar(p.morale)} {p.morale}", style=color_val(p.morale)),
+                    Text(f"🦠 感染 {bar(p.infection)} {p.infection}", style="bold red" if p.infection > 0 else "green"),
+                )
+            else:
+                stats.add_row(
+                    Text(f"❤ HP  {bar(p.health)} {p.health}", style=color_val(p.health)),
+                    Text(f"🍖 Fed {bar(p.hunger)} {p.hunger}", style=color_val(p.hunger)),
+                    Text(f"💧 H₂O {bar(p.thirst)} {p.thirst}", style=color_val(p.thirst)),
+                )
+                stats.add_row(
+                    Text(f"⚡ Stm {bar(p.stamina)} {p.stamina}", style=color_val(p.stamina)),
+                    Text(f"🧠 Mor {bar(p.morale)} {p.morale}", style=color_val(p.morale)),
+                    Text(f"🦠 Inf {bar(p.infection)} {p.infection}", style="bold red" if p.infection > 0 else "green"),
+                )
 
             self.console.print(Panel(stats, border_style="dim", padding=0))
 
             # Weapon & inventory
-            inv_line = f"🔪 {p.equipped_weapon or 'bare hands'}  |  🎒 {len(p.inventory)}/{p.max_inventory}: {', '.join(p.inventory[:5])}"
+            inv_line = f"🔪 {_item_name(p.equipped_weapon) if p.equipped_weapon else t('bare hands')}  |  🎒 {len(p.inventory)}/{p.max_inventory}: {', '.join(_item_name(i) for i in p.inventory[:5])}"
             if len(p.inventory) > 5:
-                inv_line += f" (+{len(p.inventory) - 5} more)"
+                inv_line += f" (+{len(p.inventory) - 5})"
             self.console.print(f" {inv_line}", style="dim")
             self.console.print("─" * 75, style="dim")
         else:
-            print(f"\n═══ DAY {w.day} | {w.time_of_day.value} | {w.weather.value} | Threat: {w.threat_level}/10 ═══")
-            print(f"Location: {w.location}")
-            print(f"HP: {p.health} | Hunger: {p.hunger} | Thirst: {p.thirst} | Stamina: {p.stamina} | Morale: {p.morale} | Infection: {p.infection}")
-            print(f"Weapon: {p.equipped_weapon or 'bare hands'} | Inventory: {', '.join(p.inventory) or 'empty'}")
+            if zh:
+                print(f"\n═══ {t('DAY', **{'0': str(w.day)})} | {time_str} | {weather_str} | {threat_label} {w.threat_level}/10 ═══")
+            else:
+                print(f"\n═══ DAY {w.day} | {time_str} | {weather_str} | Threat: {w.threat_level}/10 ═══")
+            print(f"{'位置' if zh else 'Location'}: {w.location}")
+            if zh:
+                print(f"生命: {p.health} | 饥饿: {p.hunger} | 口渴: {p.thirst} | 体力: {p.stamina} | 士气: {p.morale} | 感染: {p.infection}")
+            else:
+                print(f"HP: {p.health} | Hunger: {p.hunger} | Thirst: {p.thirst} | Stamina: {p.stamina} | Morale: {p.morale} | Infection: {p.infection}")
+            print(f"{'武器' if zh else 'Weapon'}: {_item_name(p.equipped_weapon) if p.equipped_weapon else t('bare hands')} | {'物品栏' if zh else 'Inventory'}: {', '.join(_item_name(i) for i in p.inventory) or t('empty')}")
             print("─" * 60)
 
     def print_narrative(self, text: str):
@@ -1266,44 +1771,64 @@ class Display:
 
     def print_death_screen(self, state: GameState):
         self.clear()
+        zh = Config.LANG == "zh"
         if HAS_RICH:
             self.console.print("\n\n")
-            self.console.print("    ╔═══════════════════════════════════╗", style="bold red")
-            self.console.print("    ║          Y O U   D I E D         ║", style="bold red")
-            self.console.print("    ╚═══════════════════════════════════╝", style="bold red")
-            self.console.print(f"\n    Survived {state.world.day} days.", style="dim")
-            self.console.print(f"    Zombies killed: {state.player.kills}", style="dim")
-            self.console.print(f"    People saved: {state.player.people_saved}", style="dim")
-            self.console.print(f"    People left behind: {state.player.people_abandoned}\n", style="dim")
+            if zh:
+                self.console.print("    ╔═══════════════════════════════════╗", style="bold red")
+                self.console.print("    ║          你   死   了             ║", style="bold red")
+                self.console.print("    ╚═══════════════════════════════════╝", style="bold red")
+            else:
+                self.console.print("    ╔═══════════════════════════════════╗", style="bold red")
+                self.console.print("    ║          Y O U   D I E D         ║", style="bold red")
+                self.console.print("    ╚═══════════════════════════════════╝", style="bold red")
+            self.console.print(f"\n    {t('Survived {days} days.', days=state.world.day)}", style="dim")
+            self.console.print(f"    {t('Zombies killed:')} {state.player.kills}", style="dim")
+            self.console.print(f"    {t('People saved:')} {state.player.people_saved}", style="dim")
+            self.console.print(f"    {t('People left behind:')} {state.player.people_abandoned}\n", style="dim")
         else:
-            print("\n\n    ═══ YOU DIED ═══")
-            print(f"    Survived {state.world.day} days. Kills: {state.player.kills}")
+            print(f"\n\n    ═══ {t('YOU DIED')} ═══")
+            print(f"    {t('Survived {days} days.', days=state.world.day)} {t('Zombies killed:')} {state.player.kills}")
 
     def print_infected_screen(self, state: GameState):
         self.clear()
+        zh = Config.LANG == "zh"
         if HAS_RICH:
             self.console.print("\n\n")
-            self.console.print("    ╔═══════════════════════════════════════════╗", style="bold green")
-            self.console.print("    ║       Y O U   T U R N E D               ║", style="bold green")
-            self.console.print("    ║   The infection claimed another soul.    ║", style="bold green")
-            self.console.print("    ╚═══════════════════════════════════════════╝", style="bold green")
-            self.console.print(f"\n    You lasted {state.world.day} days before losing yourself.", style="dim")
+            if zh:
+                self.console.print("    ╔═══════════════════════════════════════════╗", style="bold green")
+                self.console.print("    ║         你   变   异   了                ║", style="bold green")
+                self.console.print("    ║   感染吞噬了又一个灵魂。                ║", style="bold green")
+                self.console.print("    ╚═══════════════════════════════════════════╝", style="bold green")
+            else:
+                self.console.print("    ╔═══════════════════════════════════════════╗", style="bold green")
+                self.console.print("    ║       Y O U   T U R N E D               ║", style="bold green")
+                self.console.print("    ║   The infection claimed another soul.    ║", style="bold green")
+                self.console.print("    ╚═══════════════════════════════════════════╝", style="bold green")
+            self.console.print(f"\n    {t('You lasted {days} days before losing yourself.', days=state.world.day)}", style="dim")
         else:
-            print("\n\n    ═══ YOU TURNED ═══")
-            print(f"    The infection won on day {state.world.day}.")
+            print(f"\n\n    ═══ {t('YOU TURNED')} ═══")
+            print(f"    {t('You lasted {days} days before losing yourself.', days=state.world.day)}")
 
     def print_victory_screen(self, state: GameState):
         self.clear()
+        zh = Config.LANG == "zh"
         if HAS_RICH:
             self.console.print("\n\n")
-            self.console.print("    ╔═══════════════════════════════════════════╗", style="bold green")
-            self.console.print("    ║       Y O U   E S C A P E D              ║", style="bold green")
-            self.console.print("    ║   The helicopter lifts off at dawn.      ║", style="bold green")
-            self.console.print("    ╚═══════════════════════════════════════════╝", style="bold green")
-            self.console.print(f"\n    {state.world.day} days. {state.player.kills} kills. You made it.", style="bold white")
+            if zh:
+                self.console.print("    ╔═══════════════════════════════════════════╗", style="bold green")
+                self.console.print("    ║       你   逃   出   生   天             ║", style="bold green")
+                self.console.print("    ║   直升机在黎明时分起飞。                ║", style="bold green")
+                self.console.print("    ╚═══════════════════════════════════════════╝", style="bold green")
+            else:
+                self.console.print("    ╔═══════════════════════════════════════════╗", style="bold green")
+                self.console.print("    ║       Y O U   E S C A P E D              ║", style="bold green")
+                self.console.print("    ║   The helicopter lifts off at dawn.      ║", style="bold green")
+                self.console.print("    ╚═══════════════════════════════════════════╝", style="bold green")
+            self.console.print(f"\n    {t('{days} days. {kills} kills. You made it.', days=state.world.day, kills=state.player.kills)}", style="bold white")
         else:
-            print("\n\n    ═══ YOU ESCAPED ═══")
-            print(f"    You survived {state.world.day} days and made it out.")
+            print(f"\n\n    ═══ {t('YOU ESCAPED')} ═══")
+            print(f"    {t('{days} days. {kills} kills. You made it.', days=state.world.day, kills=state.player.kills)}")
 
     def get_input(self, prompt_text: str = "> ") -> str:
         if HAS_RICH:
@@ -1313,25 +1838,15 @@ class Display:
 
     def print_loading(self):
         if HAS_RICH:
-            self.console.print("\n  [dim]The dead city speaks...[/]", end="")
+            self.console.print(f"\n  [dim]{t('The dead city speaks...')}[/]", end="")
         else:
-            print("\n  Thinking...", end="", flush=True)
+            print(f"\n  {t('Thinking...')}", end="", flush=True)
 
     def print_help(self):
-        help_text = """
-COMMANDS (type during your turn):
-  [A/B/C]    — Choose an action
-  inventory  — View detailed inventory
-  use <item> — Use an item (e.g., 'use canned beans')
-  equip <item> — Equip a weapon
-  map        — View known locations
-  status     — Detailed player status
-  save       — Save the game
-  help       — Show this help
-  quit       — Quit the game
-        """
+        help_text = t("help_text")
         if HAS_RICH:
-            self.console.print(Panel(help_text.strip(), title="Help", border_style="cyan"))
+            title = "帮助" if Config.LANG == "zh" else "Help"
+            self.console.print(Panel(help_text.strip(), title=title, border_style="cyan"))
         else:
             print(help_text)
 
@@ -1390,77 +1905,71 @@ class DeadStaticGame:
         self.display = Display()
         self.llm = None
         self.current_options = {}
+        self.last_action_context = ""  # Tracks what the player did last turn
+        self.last_narrative = ""  # LLM's previous narrative output for continuity
 
     def initialize_llm(self):
-        if Config.LLM_BACKEND == "ollama":
-            return self._initialize_ollama()
-        else:
-            try:
-                self.llm = LLMClient()
-                return True
-            except Exception as e:
-                self.display.print_system_message(f"LLM init failed: {e}")
-                return False
+        """Initialize the LLM: download runtime + model if needed, start server."""
+        console = self.display.console if HAS_RICH else None
 
-    def _initialize_ollama(self):
-        """Initialize Ollama with auto-start and model validation."""
-        self.display.print_system_message("Connecting to Ollama...")
-
-        # Step 1: Check if Ollama is running, try to start if not
-        if not OllamaHelper.is_running():
-            self.display.print_system_message("Ollama not running. Attempting to start...")
-            if OllamaHelper.try_start_server():
-                self.display.print_system_message("Ollama started successfully.")
-            else:
+        # Step 1: Download llama-server binary if not present
+        if not RuntimeManager.is_server_installed():
+            self.display.print_system_message(t("First-time setup: downloading AI runtime..."))
+            if not RuntimeManager.download_server(console):
                 self.display.print_system_message(
-                    "Could not start Ollama automatically.\n"
-                    "  → Please open a terminal and run: ollama serve\n"
-                    "  → Then restart the game."
+                    f"{t('Runtime download failed.')}\n"
+                    f"  → {t('Check your internet connection and try again.')}"
                 )
-                input("\n  Press Enter to exit...")
+                input(f"\n  {t('Press Enter to exit...')}")
                 return False
 
-        # Step 2: Verify dolphin-phi is installed
-        models = OllamaHelper.list_models()
-        model_names = [m.split(":")[0] for m in models]
+        # Step 2: Download model if not present
+        if not RuntimeManager.is_model_downloaded():
+            self.display.print_system_message(t("Downloading AI model (one-time, ~1 GB)..."))
+            if not RuntimeManager.download_model(console):
+                self.display.print_system_message(
+                    f"{t('Model download failed.')}\n"
+                    f"  → {t('Check your internet connection and try again.')}"
+                )
+                input(f"\n  {t('Press Enter to exit...')}")
+                return False
+        else:
+            size = RuntimeManager.get_model_size_str()
+            self.display.print_system_message(f"Model found ({size})")
 
-        if "dolphin-phi" not in model_names and Config.OLLAMA_MODEL not in models:
+        # Step 3: Start llama-server
+        self.display.print_system_message(t("Starting AI engine..."))
+        if not RuntimeManager.start_server(console):
             self.display.print_system_message(
-                f"Model '{Config.OLLAMA_MODEL}' is not installed.\n"
-                f"  → Open a terminal and run: ollama pull dolphin-phi\n"
-                f"  → Then restart the game."
+                f"{t('Failed to start AI engine.')}\n"
+                f"  → {t('Try restarting the game.')}"
             )
-            input("\n  Press Enter to exit...")
+            input(f"\n  {t('Press Enter to exit...')}")
             return False
 
-        self.display.print_system_message(f"Using model: {Config.OLLAMA_MODEL}")
-
-        # Step 3: Initialize the LLM client
-        try:
-            self.llm = LLMClient()
-            return True
-        except Exception as e:
-            self.display.print_system_message(f"LLM init failed: {e}")
-            return False
+        self.llm = LLMClient()
+        return True
 
     def title_screen(self):
-        self.display.clear()
-        self.display.print_title_screen()
-
         while True:
-            choice = self.display.get_input("Choose: ").strip()
+            self.display.clear()
+            self.display.print_title_screen()
+
+            choice = self.display.get_input(t("Choose: ")).strip()
             if choice == '1':
                 self.new_game()
                 return True
             elif choice == '2':
                 if os.path.exists(Config.SAVE_FILE):
                     self.state, self.events = load_game()
-                    self.display.print_system_message("Game loaded.")
+                    self.display.print_system_message(t("Game loaded."))
                     return True
                 else:
-                    self.display.print_system_message("No save file found.")
+                    self.display.print_system_message(t("No save file found."))
+                    input(f"\n  {t('Press Enter to continue...')}")
             elif choice == '3':
                 self.settings_menu()
+                # Loop back to redraw title screen with potentially new language
             elif choice.upper() == 'Q':
                 return False
 
@@ -1469,51 +1978,56 @@ class DeadStaticGame:
         self.events = EventSystem()
 
         self.display.clear()
-        name = self.display.get_input("What is your name, survivor? ") or "Survivor"
+        name = self.display.get_input(t("What is your name, survivor? ")) or t("Survivor")
         self.state.player.name = name
 
-        self.display.print_system_message(f"Good luck, {name}. You'll need it.")
+        self.display.print_system_message(t("Good luck, {name}. You'll need it.", name=name))
         time.sleep(1)
 
         # Opening flavor
-        opening = (
-            f"\nYou wake to the sound of distant screaming.\n"
-            f"Day one. Or maybe two. Hard to tell anymore.\n"
-            f"The apartment around you has been ransacked. Broken glass, overturned furniture,\n"
-            f"and a barricaded door that won't hold forever.\n"
-            f"Outside, the city of the dead stretches in every direction.\n"
-            f"You need to survive. You need to find a way out.\n"
-        )
+        opening = t("opening_narrative")
         self.display.print_narrative(opening)
 
         # Starting items (random)
         starter_items = random.sample(["kitchen knife", "canned beans", "bottled water", "matchbox", "dirty bandage"], k=3)
         self.state.player.inventory = starter_items
-        self.display.print_system_message(f"You find nearby: {', '.join(starter_items)}")
+        self.display.print_system_message(f"{t('You find nearby:')} {', '.join(_item_name(i) for i in starter_items)}")
 
-        input("\n  Press Enter to begin...")
+        input(f"\n  {t('Press Enter to begin...')}")
 
     def settings_menu(self):
-        self.display.clear()
-        print(f"\n  LLM Backend: {Config.LLM_BACKEND}")
-        print(f"  Model: {Config.OLLAMA_MODEL}")
+        while True:
+            self.display.clear()
+            lang_display = "中文" if Config.LANG == "zh" else "English"
+            print(f"\n  ── {t('Settings')} ──")
+            print(f"\n  Model: {Config.GGUF_FILENAME} {t('(Q4 quantized)')}")
+            print(f"  Server: llama-server ({Config.LLAMA_CPP_VERSION})")
+            model_status = f"✓ Downloaded ({RuntimeManager.get_model_size_str()})" if RuntimeManager.is_model_downloaded() else "✗ Not downloaded"
+            server_status = "✓ Installed" if RuntimeManager.is_server_installed() else "✗ Not installed"
+            print(f"  Model: {model_status}")
+            print(f"  Runtime: {server_status}")
 
-        if Config.LLM_BACKEND == "ollama":
-            if OllamaHelper.is_running():
-                models = OllamaHelper.list_models()
-                status = "✓ dolphin-phi installed" if any("dolphin-phi" in m for m in models) else "✗ dolphin-phi NOT installed — run: ollama pull dolphin-phi"
-                print(f"  Status: {status}")
-            else:
-                print(f"  Status: ✗ Ollama not running — run: ollama serve")
+            print(f"\n  {t('[1] Run diagnostics')}")
+            print(f"  {t('[2] Re-download model & runtime')}")
+            print(f"  {t('[3] Language: {lang}', lang=lang_display)}")
+            print(f"  {t('[B] Back')}")
 
-        print(f"\n  [1] Run diagnostics")
-        print(f"  [B] Back")
-
-        choice = self.display.get_input("Choose: ").strip()
-        if choice == '1':
-            print(f"\n{OllamaHelper.full_diagnostics()}")
-            input("\n  Press Enter to continue...")
-            self.settings_menu()
+            choice = self.display.get_input(t("Choose: ")).strip()
+            if choice == '1':
+                print(f"\n{RuntimeManager.full_diagnostics()}")
+                input(f"\n  {t('Press Enter to continue...')}")
+            elif choice == '2':
+                console = self.display.console if HAS_RICH else None
+                RuntimeManager.download_server(console)
+                RuntimeManager.download_model(console)
+                input(f"\n  {t('Press Enter to continue...')}")
+            elif choice == '3':
+                Config.LANG = "en" if Config.LANG == "zh" else "zh"
+                new_lang = "中文" if Config.LANG == "zh" else "English"
+                self.display.print_system_message(t("Language switched to: {lang}", lang=new_lang))
+                time.sleep(0.5)
+            elif choice.upper() == 'B':
+                break
 
     def handle_command(self, user_input: str) -> bool:
         """Handle meta-commands. Returns True if command was handled."""
@@ -1533,7 +2047,7 @@ class DeadStaticGame:
             return True
         elif cmd == "save":
             save_game(self.state, self.events)
-            self.display.print_system_message("Game saved.")
+            self.display.print_system_message(t("Game saved."))
             return True
         elif cmd.startswith("use "):
             item_name = cmd[4:].strip()
@@ -1546,14 +2060,14 @@ class DeadStaticGame:
                 item = ITEMS.get(item_name, {})
                 if item.get("type") == "weapon":
                     self.state.player.equipped_weapon = item_name
-                    self.display.print_system_message(f"Equipped {item_name}.")
+                    self.display.print_system_message(t("Equipped {item}.", item=item_name))
                 else:
-                    self.display.print_system_message(f"Can't equip {item_name} as a weapon.")
+                    self.display.print_system_message(t("Can't equip {item} as a weapon.", item=item_name))
             else:
-                self.display.print_system_message("You don't have that.")
+                self.display.print_system_message(t("You don't have that."))
             return True
         elif cmd == "quit" or cmd == "exit":
-            save_q = self.display.get_input("Save before quitting? (y/n) ")
+            save_q = self.display.get_input(t("Save before quitting? (y/n) "))
             if save_q.lower() == 'y':
                 save_game(self.state, self.events)
             sys.exit(0)
@@ -1562,35 +2076,36 @@ class DeadStaticGame:
 
     def _show_inventory(self):
         p = self.state.player
+        inv_title = f"{t('Inventory')} ({len(p.inventory)}/{p.max_inventory})"
         if HAS_RICH:
-            table = Table(title=f"Inventory ({len(p.inventory)}/{p.max_inventory})", box=box.SIMPLE)
-            table.add_column("Item", style="cyan")
-            table.add_column("Type", style="dim")
-            table.add_column("Description", style="white")
-            for item_name in p.inventory:
-                item = ITEMS.get(item_name, {})
-                equipped = " ⚔" if item_name == p.equipped_weapon else ""
-                table.add_row(item_name + equipped, item.get("type", "?"), item.get("desc", ""))
+            table = Table(title=inv_title, box=box.SIMPLE)
+            table.add_column(t("Item"), style="cyan")
+            table.add_column(t("Type"), style="dim")
+            table.add_column(t("Description"), style="white")
+            for item_key in p.inventory:
+                item = ITEMS.get(item_key, {})
+                equipped = " ⚔" if item_key == p.equipped_weapon else ""
+                item_type = t(item.get("type", "?"))
+                table.add_row(_item_name(item_key) + equipped, item_type, _item_desc(item_key))
             self.display.console.print(table)
         else:
-            print(f"\nInventory ({len(p.inventory)}/{p.max_inventory}):")
-            for item_name in p.inventory:
-                item = ITEMS.get(item_name, {})
-                eq = " [EQUIPPED]" if item_name == p.equipped_weapon else ""
-                print(f"  - {item_name}{eq}: {item.get('desc', '')}")
+            print(f"\n{inv_title}:")
+            for item_key in p.inventory:
+                eq = " [EQUIPPED]" if item_key == p.equipped_weapon else ""
+                print(f"  - {_item_name(item_key)}{eq}: {_item_desc(item_key)}")
 
     def _show_status(self):
         p = self.state.player
         if HAS_RICH:
-            txt = f"""Name: {p.name}
-Skills: Combat {p.skills['combat']:.0f} | Stealth {p.skills['stealth']:.0f} | Medical {p.skills['medical']:.0f} | Survival {p.skills['survival']:.0f} | Persuasion {p.skills['persuasion']:.0f}
-Kills: {p.kills} | Saved: {p.people_saved} | Abandoned: {p.people_abandoned}
-Days survived: {self.state.world.day}"""
-            self.display.console.print(Panel(txt, title="Status", border_style="cyan"))
+            txt = f"""{t('Name:')} {p.name}
+{t('Skills:')} {t('Combat')} {p.skills['combat']:.0f} | {t('Stealth')} {p.skills['stealth']:.0f} | {t('Medical')} {p.skills['medical']:.0f} | {t('Survival')} {p.skills['survival']:.0f} | {t('Persuasion')} {p.skills['persuasion']:.0f}
+{t('Kills:')} {p.kills} | {t('Saved:')} {p.people_saved} | {t('Abandoned:')} {p.people_abandoned}
+{t('Days survived:')} {self.state.world.day}"""
+            self.display.console.print(Panel(txt, title=t("Status"), border_style="cyan"))
         else:
-            print(f"\nName: {p.name}")
-            print(f"Skills: {p.skills}")
-            print(f"Kills: {p.kills} | Days: {self.state.world.day}")
+            print(f"\n{t('Name:')} {p.name}")
+            print(f"{t('Skills:')} {p.skills}")
+            print(f"{t('Kills:')} {p.kills} | {t('Days survived:')} {self.state.world.day}")
 
     def _show_map(self):
         w = self.state.world
@@ -1600,17 +2115,17 @@ Days survived: {self.state.world.day}"""
         discovered = w.discovered_locations
 
         if HAS_RICH:
-            lines = [f"[bold cyan]Current: {current}[/]", f"Connected:"]
+            lines = [f"[bold cyan]{t('Current:')} {current}[/]", f"{t('Connected:')}"]
             for c in connections:
                 threat = LOCATIONS.get(c, {}).get("base_threat", "?")
                 known = "✓" if c in discovered else "?"
                 lines.append(f"  [{known}] {c} (base threat: {threat})")
-            lines.append(f"\nDiscovered locations: {', '.join(discovered)}")
-            self.display.console.print(Panel('\n'.join(lines), title="Map", border_style="cyan"))
+            lines.append(f"\n{t('Discovered locations:')} {', '.join(discovered)}")
+            self.display.console.print(Panel('\n'.join(lines), title=t("Map"), border_style="cyan"))
         else:
-            print(f"\nCurrent: {current}")
-            print(f"Connections: {', '.join(connections)}")
-            print(f"Discovered: {', '.join(discovered)}")
+            print(f"\n{t('Current:')} {current}")
+            print(f"{t('Connected:')} {', '.join(connections)}")
+            print(f"{t('Discovered locations:')} {', '.join(discovered)}")
 
     def game_turn(self):
         """One full game turn."""
@@ -1631,16 +2146,20 @@ Days survived: {self.state.world.day}"""
         self.display.print_status_bar(self.state)
         self.display.print_event_title(event["title"], event.get("is_story", False))
 
-        # 5. Build prompt and call LLM
-        prompt = build_prompt(self.state, event)
+        # 5. Build prompt with previous narrative + action for story continuity
+        prompt = build_prompt(
+            self.state, event,
+            action_context=self.last_action_context,
+            prev_narrative=self.last_narrative,
+        )
         self.display.print_loading()
-        raw_output = self.llm.generate(SYSTEM_PROMPT, prompt)
+        raw_output = self.llm.generate(_get_system_prompt(), prompt)
         parsed = parse_llm_output(raw_output, self.state)
 
         # 5b. If parsing failed, try a repair prompt to get just the choices
         if parsed.get("parse_failed"):
-            repair_input = raw_output + "\n\n" + REPAIR_PROMPT
-            repair_raw = self.llm.generate(SYSTEM_PROMPT, repair_input)
+            repair_input = raw_output + "\n\n" + _get_repair_prompt()
+            repair_raw = self.llm.generate(_get_system_prompt(), repair_input)
             repair_parsed = parse_llm_output(repair_raw, self.state)
             if not repair_parsed.get("parse_failed"):
                 # Keep original narrative, use repaired choices
@@ -1648,16 +2167,26 @@ Days survived: {self.state.world.day}"""
                 parsed["parse_failed"] = False
             else:
                 # Still failed — context-aware fallbacks are already in place
-                self.display.print_system_message("(Auto-generated choices for this turn)")
+                self.display.print_system_message(t("(Auto-generated choices for this turn)"))
 
-        # 6. Display narrative and choices
+        # 6. Store narrative for next turn's continuity, then display
+        self.last_narrative = parsed["narrative"]
         self.display.print_narrative(parsed["narrative"])
         self.current_options = parsed["options"]
         self.display.print_choices(self.current_options)
+        # Show command hints
+        if Config.LANG == "zh":
+            hint = "  (输入 save 保存 | inventory 物品栏 | help 帮助 | quit 退出)"
+        else:
+            hint = "  (save | inventory | help | quit)"
+        if HAS_RICH:
+            self.display.console.print(hint, style="dim")
+        else:
+            print(hint)
 
         # 7. Player input loop
         while True:
-            user_input = self.display.get_input("Your choice: ").strip()
+            user_input = self.display.get_input(t("Your choice: ")).strip()
 
             if not user_input:
                 continue
@@ -1678,14 +2207,13 @@ Days survived: {self.state.world.day}"""
                     choice_key = k
                     break
             else:
-                self.display.print_system_message("Invalid. Choose A, B, or C (or type 'help').")
+                self.display.print_system_message(t("Invalid. Choose A, B, or C (or type 'help')."))
                 continue
             break
 
         chosen_action = self.current_options.get(choice_key, user_input)
 
         # 8. Resolve action mechanically
-        action_context = chosen_action
         extra_context = []
 
         # Movement detection
@@ -1699,32 +2227,36 @@ Days survived: {self.state.world.day}"""
                 break
 
         # Combat detection
-        combat_keywords = ["fight", "attack", "kill", "shoot", "swing", "stab", "confront", "charge"]
+        combat_keywords = ["fight", "attack", "kill", "shoot", "swing", "stab", "confront", "charge",
+                           "战斗", "攻击", "杀", "射击", "开枪", "刺", "砍", "冲", "举起武器", "武器"]
         if any(kw in chosen_action.lower() for kw in combat_keywords):
             result = self.rules.resolve_combat(self.state.player, self.state.world.threat_level)
             extra_context.append(f"[Combat: {result['outcome']}. {result['narrative_hint']}]")
             self.state.world.noise_level += result.get("noise_generated", 0)
 
         # Stealth detection
-        stealth_keywords = ["sneak", "hide", "stealth", "quiet", "avoid", "creep", "slip past"]
+        stealth_keywords = ["sneak", "hide", "stealth", "quiet", "avoid", "creep", "slip past",
+                            "潜行", "躲", "藏", "安静", "避开", "悄悄", "绕过", "隐蔽"]
         if any(kw in chosen_action.lower() for kw in stealth_keywords):
             result = self.rules.resolve_stealth(self.state.player, self.state.world.threat_level)
             extra_context.append(f"[Stealth: {result['outcome']}. {result['narrative_hint']}]")
 
         # Scavenging / loot
-        search_keywords = ["search", "loot", "scavenge", "look for", "check", "rummage", "open", "grab"]
+        search_keywords = ["search", "loot", "scavenge", "look for", "check", "rummage", "open", "grab",
+                           "搜索", "搜刮", "搜寻", "查看", "检查", "翻找", "打开", "拿"]
         if any(kw in chosen_action.lower() for kw in search_keywords) and event["id"] in ("scavenge", "quiet_moment", "free_roam", "locked_door"):
             loc_data = LOCATIONS.get(self.state.world.location, {})
             if random.random() < loc_data.get("loot_chance", 0.2) and loc_data.get("loot_table"):
                 found = random.choice(loc_data["loot_table"])
                 if len(self.state.player.inventory) < self.state.player.max_inventory:
                     self.state.player.inventory.append(found)
-                    extra_context.append(f"[Found: {found}]")
+                    extra_context.append(f"[Found: {_item_name(found)}]")
                 else:
-                    extra_context.append(f"[Spotted {found} but inventory is full]")
+                    extra_context.append(f"[Spotted {_item_name(found)} but inventory is full]")
 
         # Rest detection
-        rest_keywords = ["rest", "sleep", "camp", "wait", "recover"]
+        rest_keywords = ["rest", "sleep", "camp", "wait", "recover",
+                         "休息", "睡", "扎营", "等待", "恢复", "歇"]
         if any(kw in chosen_action.lower() for kw in rest_keywords):
             stamina_restore = random.randint(15, 30)
             self.state.player.stamina = min(100, self.state.player.stamina + stamina_restore)
@@ -1732,7 +2264,29 @@ Days survived: {self.state.world.day}"""
             self.state.player.morale = max(0, min(100, self.state.player.morale + morale_change))
             extra_context.append(f"[Rested. +{stamina_restore} stamina]")
 
-        # 9. Update history
+        # 9. Save the action + outcome for next turn's LLM prompt
+        self.last_action_context = chosen_action
+        if extra_context:
+            # Convert mechanical tags to narrative hints
+            hints = []
+            for ctx in extra_context:
+                ctx = ctx.strip("[]")
+                if ctx.startswith("Combat:"):
+                    hints.append(ctx.replace("Combat: ", ""))
+                elif ctx.startswith("Stealth:"):
+                    hints.append(ctx.replace("Stealth: ", ""))
+                elif ctx.startswith("Found:"):
+                    hints.append(ctx.replace("Found: ", "found "))
+                elif ctx.startswith("Moved to"):
+                    pass  # movement is obvious from location change
+                elif ctx.startswith("Rested"):
+                    hints.append("rested and recovered some energy")
+                else:
+                    hints.append(ctx)
+            if hints:
+                self.last_action_context += " (" + "; ".join(hints) + ")"
+
+        # 10. Update history
         summary = f"Day {self.state.world.day} {self.state.world.time_of_day.value}: {chosen_action}"
         if extra_context:
             summary += " " + " ".join(extra_context)
@@ -1754,7 +2308,7 @@ Days survived: {self.state.world.day}"""
             return
 
         if not self.initialize_llm():
-            self.display.print_system_message("Could not initialize LLM. Check settings.")
+            self.display.print_system_message(t("Could not initialize LLM. Check settings."))
             return
 
         while self.state.game_over == GameOver.NONE:
@@ -1773,7 +2327,7 @@ Days survived: {self.state.world.day}"""
         elif self.state.game_over == GameOver.ESCAPED:
             self.display.print_victory_screen(self.state)
 
-        input("\n  Press Enter to exit...")
+        input(f"\n  {t('Press Enter to exit...')}")
 
 
 # ══════════════════════════════════════════════════════════════════
