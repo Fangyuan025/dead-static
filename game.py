@@ -127,7 +127,7 @@ class Config:
     # Game settings
     SAVE_FILE = "dead_static_save.json"
     MAX_HISTORY = 8
-    LLM_MAX_TOKENS = 400
+    LLM_MAX_TOKENS = 250
     LLM_TEMPERATURE = 0.7
     LLM_TOP_P = 0.9
 
@@ -648,10 +648,10 @@ EVENT_POOL = {
             "template_zh": "{barrier}传来敲击声。三下，缓慢的。然后是沉默。",
         },
         {
-            "id": "nightmare", "weight": 25,
+            "id": "nightmare", "weight": 10,
             "title": "Nightmare", "title_zh": "噩梦",
-            "template": "You jolt awake, drenched in sweat. The dream felt {dream_quality}.",
-            "template_zh": "你猛然惊醒，浑身冷汗。梦境{dream_quality}。",
+            "template": "You had a bad dream. It felt {dream_quality}. Now you are awake.",
+            "template_zh": "你做了个噩梦，梦境{dream_quality}。现在你醒了。",
         },
         {
             "id": "night_noise", "weight": 15,
@@ -1015,23 +1015,27 @@ class RulesEngine:
 # LLM INTERFACE
 # ══════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT_EN = """You are the narrator of a zombie apocalypse text adventure. Second person, present tense. Short sentences. Vary your descriptions — use sounds, light, temperature, textures, weather, and small human details, not just blood and rot. Build tension through atmosphere, not gore.
+SYSTEM_PROMPT_EN = """You narrate a zombie text adventure. Second person, present tense. Be concise.
 
 RULES:
-1. If a player action is given, your FIRST sentences must describe what happened when they did it. Then describe the new scene.
-2. Do NOT assume the player picks up, grabs, or uses anything. Only describe what they SEE around them.
-3. Write 80-200 words, then end with exactly 3 choices in this format:
+1. If a player action is given, describe what happened FIRST.
+2. Focus on what is HAPPENING and what the player can DO. No filler. No vague feelings. No "eyes watching you" or "something feels wrong". Describe concrete things: a sound, a door, a person, a threat.
+3. Do NOT assume the player picks up or uses anything.
+4. Never write dream or wake-up scenes unless told.
+5. Write 50-100 words, then end with 3 choices:
 
 [A] action option
 [B] action option
 [C] action option"""
 
-SYSTEM_PROMPT_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人称、现在时写作。短句为主。多样化你的描写——用声音、光线、温度、触感、天气、人文细节来营造氛围，不要只写血腥和腐烂。用气氛制造紧张感，而不是靠血腥场面。必须用中文回复。
+SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称，现在时。简洁有力。必须用中文。
 
 规则：
-1. 如果给出了玩家的行动，你的开头几句必须描述那个行动发生了什么。然后描述新场景。
-2. 不要假设玩家拿起、抓取或使用任何东西。只描述玩家看到的。
-3. 写80-200字叙事，然后以恰好3个选项结尾：
+1. 如果给了玩家行动，先描述行动结果。
+2. 只写正在发生的事和玩家能做的事。不要写废话。不要写"感觉有什么在注视""空气中弥漫着不安"之类的套话。写具体的东西：一个声音、一扇门、一个人、一个威胁。
+3. 不要假设玩家拿起或使用任何东西。
+4. 不要写梦境或惊醒场景。
+5. 写50-100字叙事，然后给3个选项：
 
 [A] 行动选项
 [B] 行动选项
@@ -1076,43 +1080,30 @@ def build_prompt(state: GameState, event: dict,
 
     loc_name = _loc_name(w.location)
 
-    # Atmosphere hint — varies by weather/time/location to prevent repetitive descriptions
-    atmo_en = {
-        "Dawn": ["pale light filters in", "birds are silent", "dew on broken glass"],
-        "Morning": ["weak sunlight cuts through dust", "shadows retreat slowly", "a dog barks far away"],
-        "Afternoon": ["heat shimmers off concrete", "flies buzz around something", "your shadow stretches long"],
-        "Dusk": ["orange light fades fast", "streetlights flicker but stay dark", "the temperature drops"],
-        "Night": ["moonlight through broken windows", "every shadow could be moving", "your breath fogs in the cold"],
-    }
-    atmo_zh = {
-        "Dawn": ["苍白的光线透进来", "鸟儿沉默不语", "碎玻璃上结着露珠"],
-        "Morning": ["微弱的阳光穿透灰尘", "阴影缓缓退去", "远处传来狗叫声"],
-        "Afternoon": ["热浪从水泥地上升腾", "苍蝇嗡嗡绕着什么东西飞", "你的影子拉得很长"],
-        "Dusk": ["橙色的光线迅速消退", "路灯闪烁但不亮", "温度骤降"],
-        "Night": ["月光透过破碎的窗户", "每个阴影都可能在移动", "你的呼吸在冷空气中凝成白雾"],
-    }
-    weather_en = {
-        "Clear": "the sky is pale and empty",
-        "Overcast": "thick clouds press down",
-        "Rain": "rain drums on every surface",
-        "Fog": "visibility is barely ten meters",
-        "Storm": "wind howls through the ruins",
-    }
-    weather_zh = {
-        "Clear": "天空苍白而空旷",
-        "Overcast": "厚重的云压下来",
-        "Rain": "雨水敲打着每一个表面",
-        "Fog": "能见度不到十米",
-        "Storm": "风在废墟中呼啸",
-    }
-    time_key = w.time_of_day.value
-    weather_key = w.weather.value
-    if zh:
-        atmo_hint = random.choice(atmo_zh.get(time_key, ["四周很安静"]))
-        weather_hint = weather_zh.get(weather_key, "")
-    else:
-        atmo_hint = random.choice(atmo_en.get(time_key, ["it's quiet"]))
-        weather_hint = weather_en.get(weather_key, "")
+    # Concrete detail hint — one random specific thing to anchor the scene
+    # These are small, concrete objects/sounds, not vague atmosphere
+    details_en = [
+        "a child's shoe lies in the doorway", "a car alarm goes off two blocks away",
+        "a calendar on the wall shows last month", "a shopping cart blocks the path",
+        "graffiti on the wall reads HELP US", "a fire escape ladder hangs loose",
+        "a cat watches from a windowsill", "a bicycle lies twisted on the ground",
+        "a payphone receiver dangles off the hook", "a vending machine hums with power",
+        "broken glass crunches underfoot", "a newspaper flutters in the wind",
+        "a backpack sits abandoned by the curb", "a water pipe drips from the ceiling",
+        "tire tracks in the mud lead south", "a flashlight blinks on and off nearby",
+    ]
+    details_zh = [
+        "门口躺着一只童鞋", "两条街外传来汽车警报声",
+        "墙上的日历停在上个月", "一辆购物车挡住了路",
+        "墙上的涂鸦写着'救救我们'", "消防梯松松垮垮地挂着",
+        "一只猫从窗台上注视着你", "一辆自行车扭曲地倒在地上",
+        "公用电话的听筒悬挂着", "一台自动售货机还在嗡嗡运转",
+        "脚下碎玻璃嘎吱作响", "一张报纸在风中翻飞",
+        "路边有一个被遗弃的背包", "天花板上的水管在滴水",
+        "泥地里的轮胎痕迹朝南延伸", "附近有手电筒一闪一闪",
+    ]
+
+    detail = random.choice(details_zh if zh else details_en)
 
     lines = []
     if zh:
@@ -1120,7 +1111,7 @@ def build_prompt(state: GameState, event: dict,
             lines.append(f"玩家行动: {action_context}")
         lines.append(f"场景: {loc_name}——{loc_desc}")
         lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
-        lines.append(f"氛围: {atmo_hint}，{weather_hint}。")
+        lines.append(f"细节: {detail}。")
         if alert_str:
             lines.append(f"状态: {alert_str}")
         lines.append(f"事件: {event['description']}")
@@ -1131,7 +1122,7 @@ def build_prompt(state: GameState, event: dict,
             lines.append(f"Player action: {action_context}")
         lines.append(f"Scene: {w.location} — {loc_desc}")
         lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
-        lines.append(f"Mood: {atmo_hint}, {weather_hint}.")
+        lines.append(f"Detail: {detail}.")
         if alert_str:
             lines.append(f"Status: {alert_str}")
         lines.append(f"Event: {event['description']}")
@@ -2470,6 +2461,16 @@ class DeadStaticGame:
             self.display.print_system_message(t("Could not initialize LLM. Check settings."))
             return
 
+        self._play_loop()
+
+    def _play_loop(self, restart=False):
+        """Core game loop. Can be called again on restart without re-initializing LLM."""
+        self.current_options = {}
+        self.last_action_context = ""
+        self.last_narrative = ""
+        if restart:
+            self.new_game()
+
         while self.state.game_over == GameOver.NONE:
             try:
                 self.game_turn()
@@ -2486,7 +2487,26 @@ class DeadStaticGame:
         elif self.state.game_over == GameOver.ESCAPED:
             self.display.print_victory_screen(self.state)
 
-        input(f"\n  {t('Press Enter to exit...')}")
+        # Restart or quit
+        if self._ask_restart():
+            self._play_loop(restart=True)
+
+    def _ask_restart(self) -> bool:
+        """Ask the player if they want to play again."""
+        if Config.LANG == "zh":
+            prompt = "\n  [R] 重新开始    [Q] 退出"
+        else:
+            prompt = "\n  [R] Play Again    [Q] Quit"
+        if HAS_RICH:
+            self.display.console.print(prompt, style="bold")
+        else:
+            print(prompt)
+        while True:
+            choice = self.display.get_input(t("Your choice: ")).strip().upper()
+            if choice in ("R", "重"):
+                return True
+            if choice in ("Q", "退", ""):
+                return False
 
 
 # ══════════════════════════════════════════════════════════════════
