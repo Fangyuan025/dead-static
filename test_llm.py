@@ -1,4 +1,4 @@
-"""Test LLM output quality by sending sample prompts."""
+"""Test LLM output quality — check for varied descriptions."""
 import requests
 
 SERVER = "http://127.0.0.1:8384"
@@ -19,7 +19,7 @@ def send_prompt(system, user_prompt):
     msg = data["choices"][0]["message"]
     return (msg.get("content") or "").strip()
 
-SYSTEM = """You are the narrator of a zombie apocalypse text adventure. Write in second person, present tense. Short sentences. Grim tone. Show what the player sees, hears, smells.
+SYSTEM = """You are the narrator of a zombie apocalypse text adventure. Second person, present tense. Short sentences. Vary your descriptions — use sounds, light, temperature, textures, weather, and small human details, not just blood and rot. Build tension through atmosphere, not gore.
 
 RULES:
 1. If a player action is given, your FIRST sentences must describe what happened when they did it. Then describe the new scene.
@@ -30,7 +30,7 @@ RULES:
 [B] action option
 [C] action option"""
 
-SYSTEM_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人称、现在时写作。短句为主，冷硬风格。描述玩家看到、听到、闻到的一切。必须用中文回复。
+SYSTEM_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人称、现在时写作。短句为主。多样化你的描写——用声音、光线、温度、触感、天气、人文细节来营造氛围，不要只写血腥和腐烂。用气氛制造紧张感，而不是靠血腥场面。必须用中文回复。
 
 规则：
 1. 如果给出了玩家的行动，你的开头几句必须描述那个行动发生了什么。然后描述新场景。
@@ -41,56 +41,55 @@ SYSTEM_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人�
 [B] 行动选项
 [C] 行动选项"""
 
-# Test 1: First turn — no action
+# Test 1: Dawn, quiet scene
 print("=" * 60)
-print("TEST 1: First turn - no previous action")
+print("TEST 1: Dawn, quiet apartment — atmosphere test")
 print("=" * 60)
 
 prompt1 = """Scene: Abandoned Apartment — A ransacked apartment on the third floor. The door barely holds.
 Day 1, Dawn, Overcast. Threat 2/10. Weapon: kitchen knife.
+Mood: pale light filters in, thick clouds press down.
 Event: You spot what looks like a matchbox partially hidden nearby."""
 
 print(f"\n{send_prompt(SYSTEM, prompt1)}")
 
-# Test 2: Player moved to new location
+# Test 2: Night, tense scene
 print("\n" + "=" * 60)
-print("TEST 2: Player action — moved to Main Street")
+print("TEST 2: Night, fog — atmosphere contrast")
 print("=" * 60)
 
-prompt2 = """Player action: head toward Main Street
-Scene: Main Street — A wide boulevard littered with wrecked cars and dried blood.
-Day 1, Dawn, Overcast. Threat 5/10. Weapon: kitchen knife.
-Event: A lone zombie stumbles into view, dragging one leg behind it.
-Start by describing what happened when the player did this."""
+prompt2 = """Scene: Back Alley — Narrow alley reeking of rot. Dumpsters line both walls.
+Day 3, Night, Fog. Threat 7/10. Weapon: crowbar.
+Mood: every shadow could be moving, visibility is barely ten meters.
+Event: A strange noise echoes from somewhere to the west."""
 
 print(f"\n{send_prompt(SYSTEM, prompt2)}")
 
-# Test 3: Chinese mode
+# Test 3: Chinese, afternoon calm
 print("\n" + "=" * 60)
-print("TEST 3: Chinese — player moved to Main Street")
+print("TEST 3: Chinese — afternoon, calm moment")
 print("=" * 60)
 
-prompt3 = """玩家行动: 前往Main Street
-场景: Main Street——宽阔的大街上散落着报废的汽车和干涸的血迹。
-第1天，黎明，阴天。威胁5/10。武器: 菜刀。
-事件: 一只丧尸跌跌撞撞地出现在视野中，拖着一条腿。
-先描述玩家行动的结果，再描述场景。"""
+prompt3 = """场景: 天台——被风吹拂的天台，可以俯瞰废墟般的天际线。相对安全。
+第2天，下午，晴天。威胁1/10。武器: 菜刀。
+氛围: 热浪从水泥地上升腾，天空苍白而空旷。
+事件: 难得没有什么想要你命的东西。这份寂静令人不安。"""
 
 print(f"\n{send_prompt(SYSTEM_ZH, prompt3)}")
 
-# Test 4: Combat aftermath
+# Test 4: Chinese, with action
 print("\n" + "=" * 60)
-print("TEST 4: After combat — player fought zombie")
+print("TEST 4: Chinese — rainy morning, player action")
 print("=" * 60)
 
-prompt4 = """Player action: fight the zombie with the kitchen knife (hit, dealt damage)
-Scene: Main Street — A wide boulevard littered with wrecked cars and dried blood.
-Day 1, Morning, Overcast. Threat 6/10. Weapon: kitchen knife.
-Status: badly wounded
-Event: The street falls silent. A pharmacy sign creaks in the wind nearby.
-Start by describing what happened when the player did this."""
+prompt4 = """玩家行动: 搜索杂货店的储藏室
+场景: 杂货店——货架基本被搬空了，但后面的储藏室可能还有物资。
+第2天，上午，雨天。威胁6/10。武器: 菜刀。
+氛围: 微弱的阳光穿透灰尘，雨水敲打着每一个表面。
+事件: 你发现附近半隐半现的看起来像是罐装汤的东西。
+先描述玩家行动的结果，再描述场景。"""
 
-print(f"\n{send_prompt(SYSTEM, prompt4)}")
+print(f"\n{send_prompt(SYSTEM_ZH, prompt4)}")
 
 print("\n" + "=" * 60)
 print("ALL TESTS DONE")

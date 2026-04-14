@@ -375,6 +375,7 @@ class GameState:
 LOCATIONS = {
     "Abandoned Apartment": {
         "type": "shelter", "base_threat": 2,
+        "name_zh": "废弃公寓",
         "description": "A ransacked apartment on the third floor. The door barely holds.",
         "desc_zh": "三楼一间被洗劫的公寓。门勉强撑着。",
         "connections": ["Main Street", "Back Alley", "Rooftop"],
@@ -383,6 +384,7 @@ LOCATIONS = {
     },
     "Main Street": {
         "type": "street", "base_threat": 5,
+        "name_zh": "主街",
         "description": "A wide boulevard littered with wrecked cars and dried blood.",
         "desc_zh": "宽阔的大街上散落着报废的汽车和干涸的血迹。",
         "connections": ["Abandoned Apartment", "Grocery Store", "Police Station", "Hospital"],
@@ -391,6 +393,7 @@ LOCATIONS = {
     },
     "Back Alley": {
         "type": "street", "base_threat": 4,
+        "name_zh": "后巷",
         "description": "Narrow alley reeking of rot. Dumpsters line both walls.",
         "desc_zh": "狭窄的小巷弥漫着腐臭。两侧排列着垃圾箱。",
         "connections": ["Abandoned Apartment", "Pawn Shop", "Sewer Entrance"],
@@ -399,6 +402,7 @@ LOCATIONS = {
     },
     "Rooftop": {
         "type": "shelter", "base_threat": 1,
+        "name_zh": "天台",
         "description": "Wind-swept rooftop with a view of the ruined skyline. Relatively safe.",
         "desc_zh": "被风吹拂的天台，可以俯瞰废墟般的天际线。相对安全。",
         "connections": ["Abandoned Apartment"],
@@ -407,6 +411,7 @@ LOCATIONS = {
     },
     "Grocery Store": {
         "type": "building", "base_threat": 6,
+        "name_zh": "杂货店",
         "description": "Shelves mostly bare, but the back storage room might still have supplies.",
         "desc_zh": "货架基本被搬空了，但后面的储藏室可能还有物资。",
         "connections": ["Main Street"],
@@ -415,6 +420,7 @@ LOCATIONS = {
     },
     "Police Station": {
         "type": "building", "base_threat": 7,
+        "name_zh": "警察局",
         "description": "Barricaded front, broken windows. Could have weapons — or worse.",
         "desc_zh": "正门被封锁，窗户破碎。可能有武器——也可能有更糟的东西。",
         "connections": ["Main Street"],
@@ -423,6 +429,7 @@ LOCATIONS = {
     },
     "Hospital": {
         "type": "building", "base_threat": 8,
+        "name_zh": "医院",
         "description": "The west wing collapsed. East wing is dark and full of shuffling sounds.",
         "desc_zh": "西翼已经坍塌。东翼一片漆黑，到处是拖行的声音。",
         "connections": ["Main Street", "Hospital Basement"],
@@ -431,6 +438,7 @@ LOCATIONS = {
     },
     "Hospital Basement": {
         "type": "building", "base_threat": 9,
+        "name_zh": "医院地下室",
         "description": "Emergency generators still hum. Smells like formaldehyde and death.",
         "desc_zh": "应急发电机还在嗡嗡作响。空气中弥漫着福尔马林和死亡的气味。",
         "connections": ["Hospital"],
@@ -439,6 +447,7 @@ LOCATIONS = {
     },
     "Pawn Shop": {
         "type": "building", "base_threat": 4,
+        "name_zh": "当铺",
         "description": "Iron bars on the windows. The owner didn't make it, but his stock did.",
         "desc_zh": "窗户上装着铁栏。店主没活下来，但他的货物还在。",
         "connections": ["Back Alley"],
@@ -447,6 +456,7 @@ LOCATIONS = {
     },
     "Sewer Entrance": {
         "type": "wilderness", "base_threat": 6,
+        "name_zh": "下水道入口",
         "description": "A rusted grate leads into the sewer tunnels. Quiet, but claustrophobic.",
         "desc_zh": "一扇锈蚀的铁栅通向下水道。安静，但令人窒息。",
         "connections": ["Back Alley", "Sewer Tunnels"],
@@ -455,6 +465,7 @@ LOCATIONS = {
     },
     "Sewer Tunnels": {
         "type": "wilderness", "base_threat": 7,
+        "name_zh": "下水道隧道",
         "description": "Ankle-deep water, echoing drips. Something moved in the dark ahead.",
         "desc_zh": "齐踝深的水，回荡的水滴声。黑暗前方有什么东西动了。",
         "connections": ["Sewer Entrance", "River Bridge"],
@@ -463,6 +474,7 @@ LOCATIONS = {
     },
     "River Bridge": {
         "type": "street", "base_threat": 5,
+        "name_zh": "河桥",
         "description": "The bridge is partially collapsed but crossable. The other side looks... different.",
         "desc_zh": "桥面部分坍塌但还能通行。对岸看起来……不一样。",
         "connections": ["Sewer Tunnels", "Military Checkpoint"],
@@ -471,6 +483,7 @@ LOCATIONS = {
     },
     "Military Checkpoint": {
         "type": "building", "base_threat": 6,
+        "name_zh": "军事检查站",
         "description": "Sandbags, razor wire, and silence. The soldiers are long gone — or turned.",
         "desc_zh": "沙袋、铁丝网，一片死寂。士兵们早已离去——或者已经变异。",
         "connections": ["River Bridge", "Evacuation Zone"],
@@ -479,6 +492,7 @@ LOCATIONS = {
     },
     "Evacuation Zone": {
         "type": "building", "base_threat": 3,
+        "name_zh": "撤离区",
         "description": "A fenced compound with helicopter pads. The last broadcast said rescue comes at dawn.",
         "desc_zh": "一个有直升机停机坪的围栏营地。最后一次广播说救援会在黎明到来。",
         "connections": ["Military Checkpoint"],
@@ -566,6 +580,15 @@ def _item_desc(key: str) -> str:
     if Config.LANG == "zh" and "desc_zh" in item:
         return item["desc_zh"]
     return item.get("desc", "")
+
+
+def _loc_name(key: str) -> str:
+    """Return localized location name."""
+    if Config.LANG == "zh":
+        loc = LOCATIONS.get(key)
+        if loc and "name_zh" in loc:
+            return loc["name_zh"]
+    return key
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -774,7 +797,7 @@ class EventSystem:
         loot = loc.get("loot_table", [])
 
         if zh:
-            item_hint_val = f"看起来像是{random.choice(loot)}的东西" if loot else "废墟中的什么东西"
+            item_hint_val = f"看起来像是{_item_name(random.choice(loot))}的东西" if loot else "废墟中的什么东西"
             door_hint_val = "你的开锁工具也许能派上用场" if "lockpick set" in state.player.inventory else "一套开锁工具可能有用"
         else:
             item_hint_val = f"what looks like a {random.choice(loot)}" if loot else "something in the rubble"
@@ -992,7 +1015,7 @@ class RulesEngine:
 # LLM INTERFACE
 # ══════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT_EN = """You are the narrator of a zombie apocalypse text adventure. Write in second person, present tense. Short sentences. Grim tone. Show what the player sees, hears, smells.
+SYSTEM_PROMPT_EN = """You are the narrator of a zombie apocalypse text adventure. Second person, present tense. Short sentences. Vary your descriptions — use sounds, light, temperature, textures, weather, and small human details, not just blood and rot. Build tension through atmosphere, not gore.
 
 RULES:
 1. If a player action is given, your FIRST sentences must describe what happened when they did it. Then describe the new scene.
@@ -1003,7 +1026,7 @@ RULES:
 [B] action option
 [C] action option"""
 
-SYSTEM_PROMPT_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人称、现在时写作。短句为主，冷硬风格。描述玩家看到、听到、闻到的一切。必须用中文回复。
+SYSTEM_PROMPT_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人称、现在时写作。短句为主。多样化你的描写——用声音、光线、温度、触感、天气、人文细节来营造氛围，不要只写血腥和腐烂。用气氛制造紧张感，而不是靠血腥场面。必须用中文回复。
 
 规则：
 1. 如果给出了玩家的行动，你的开头几句必须描述那个行动发生了什么。然后描述新场景。
@@ -1051,12 +1074,53 @@ def build_prompt(state: GameState, event: dict,
         if p.morale < 20: alerts.append("breaking down")
     alert_str = ", ".join(alerts)
 
+    loc_name = _loc_name(w.location)
+
+    # Atmosphere hint — varies by weather/time/location to prevent repetitive descriptions
+    atmo_en = {
+        "Dawn": ["pale light filters in", "birds are silent", "dew on broken glass"],
+        "Morning": ["weak sunlight cuts through dust", "shadows retreat slowly", "a dog barks far away"],
+        "Afternoon": ["heat shimmers off concrete", "flies buzz around something", "your shadow stretches long"],
+        "Dusk": ["orange light fades fast", "streetlights flicker but stay dark", "the temperature drops"],
+        "Night": ["moonlight through broken windows", "every shadow could be moving", "your breath fogs in the cold"],
+    }
+    atmo_zh = {
+        "Dawn": ["苍白的光线透进来", "鸟儿沉默不语", "碎玻璃上结着露珠"],
+        "Morning": ["微弱的阳光穿透灰尘", "阴影缓缓退去", "远处传来狗叫声"],
+        "Afternoon": ["热浪从水泥地上升腾", "苍蝇嗡嗡绕着什么东西飞", "你的影子拉得很长"],
+        "Dusk": ["橙色的光线迅速消退", "路灯闪烁但不亮", "温度骤降"],
+        "Night": ["月光透过破碎的窗户", "每个阴影都可能在移动", "你的呼吸在冷空气中凝成白雾"],
+    }
+    weather_en = {
+        "Clear": "the sky is pale and empty",
+        "Overcast": "thick clouds press down",
+        "Rain": "rain drums on every surface",
+        "Fog": "visibility is barely ten meters",
+        "Storm": "wind howls through the ruins",
+    }
+    weather_zh = {
+        "Clear": "天空苍白而空旷",
+        "Overcast": "厚重的云压下来",
+        "Rain": "雨水敲打着每一个表面",
+        "Fog": "能见度不到十米",
+        "Storm": "风在废墟中呼啸",
+    }
+    time_key = w.time_of_day.value
+    weather_key = w.weather.value
+    if zh:
+        atmo_hint = random.choice(atmo_zh.get(time_key, ["四周很安静"]))
+        weather_hint = weather_zh.get(weather_key, "")
+    else:
+        atmo_hint = random.choice(atmo_en.get(time_key, ["it's quiet"]))
+        weather_hint = weather_en.get(weather_key, "")
+
     lines = []
     if zh:
         if action_context:
             lines.append(f"玩家行动: {action_context}")
-        lines.append(f"场景: {w.location}——{loc_desc}")
+        lines.append(f"场景: {loc_name}——{loc_desc}")
         lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
+        lines.append(f"氛围: {atmo_hint}，{weather_hint}。")
         if alert_str:
             lines.append(f"状态: {alert_str}")
         lines.append(f"事件: {event['description']}")
@@ -1067,6 +1131,7 @@ def build_prompt(state: GameState, event: dict,
             lines.append(f"Player action: {action_context}")
         lines.append(f"Scene: {w.location} — {loc_desc}")
         lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
+        lines.append(f"Mood: {atmo_hint}, {weather_hint}.")
         if alert_str:
             lines.append(f"Status: {alert_str}")
         lines.append(f"Event: {event['description']}")
@@ -1372,6 +1437,9 @@ class LLMClient:
                 stream=True,
             )
             resp.raise_for_status()
+            # Force UTF-8 decoding — llama-server may not set charset header,
+            # causing requests to default to latin-1 and garble CJK text
+            resp.encoding = "utf-8"
 
             full_text = ""
             for line in resp.iter_lines(decode_unicode=True):
@@ -1735,7 +1803,7 @@ class Display:
 
             # Location
             loc_data = LOCATIONS.get(w.location, {})
-            loc_name = w.location
+            loc_name = _loc_name(w.location)
             self.console.print(f" 📍 {loc_name}", style="bold cyan")
 
             # Stats
@@ -1780,7 +1848,7 @@ class Display:
                 print(f"\n═══ {t('DAY', **{'0': str(w.day)})} | {time_str} | {weather_str} | {threat_label} {w.threat_level}/10 ═══")
             else:
                 print(f"\n═══ DAY {w.day} | {time_str} | {weather_str} | Threat: {w.threat_level}/10 ═══")
-            print(f"{'位置' if zh else 'Location'}: {w.location}")
+            print(f"{'位置' if zh else 'Location'}: {_loc_name(w.location)}")
             if zh:
                 print(f"生命: {p.health} | 饥饿: {p.hunger} | 口渴: {p.thirst} | 体力: {p.stamina} | 士气: {p.morale} | 感染: {p.infection}")
             else:
@@ -2194,17 +2262,17 @@ class DeadStaticGame:
         discovered = w.discovered_locations
 
         if HAS_RICH:
-            lines = [f"[bold cyan]{t('Current:')} {current}[/]", f"{t('Connected:')}"]
+            lines = [f"[bold cyan]{t('Current:')} {_loc_name(current)}[/]", f"{t('Connected:')}"]
             for c in connections:
                 threat = LOCATIONS.get(c, {}).get("base_threat", "?")
                 known = "✓" if c in discovered else "?"
-                lines.append(f"  [{known}] {c} (base threat: {threat})")
-            lines.append(f"\n{t('Discovered locations:')} {', '.join(discovered)}")
+                lines.append(f"  [{known}] {_loc_name(c)} ({t('Threat:')} {threat})")
+            lines.append(f"\n{t('Discovered locations:')} {', '.join(_loc_name(d) for d in discovered)}")
             self.display.console.print(Panel('\n'.join(lines), title=t("Map"), border_style="cyan"))
         else:
-            print(f"\n{t('Current:')} {current}")
-            print(f"{t('Connected:')} {', '.join(connections)}")
-            print(f"{t('Discovered locations:')} {', '.join(discovered)}")
+            print(f"\n{t('Current:')} {_loc_name(current)}")
+            print(f"{t('Connected:')} {', '.join(_loc_name(c) for c in connections)}")
+            print(f"{t('Discovered locations:')} {', '.join(_loc_name(d) for d in discovered)}")
 
     def game_turn(self):
         """One full game turn."""
@@ -2355,6 +2423,7 @@ class DeadStaticGame:
         if extra_context:
             # Convert mechanical tags to narrative hints
             hints = []
+            zh = Config.LANG == "zh"
             for ctx in extra_context:
                 ctx = ctx.strip("[]")
                 if ctx.startswith("Combat:"):
@@ -2362,11 +2431,15 @@ class DeadStaticGame:
                 elif ctx.startswith("Stealth:"):
                     hints.append(ctx.replace("Stealth: ", ""))
                 elif ctx.startswith("Found:"):
-                    hints.append(ctx.replace("Found: ", "found "))
+                    item = ctx.replace("Found: ", "")
+                    hints.append(f"找到了{item}" if zh else f"found {item}")
+                elif ctx.startswith("Spotted"):
+                    item = ctx.replace("Spotted ", "").replace(" but inventory is full", "")
+                    hints.append(f"看到了{item}但背包满了" if zh else ctx)
                 elif ctx.startswith("Moved to"):
                     pass  # movement is obvious from location change
                 elif ctx.startswith("Rested"):
-                    hints.append("rested and recovered some energy")
+                    hints.append("休息并恢复了一些体力" if zh else "rested and recovered some energy")
                 else:
                     hints.append(ctx)
             if hints:
