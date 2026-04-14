@@ -49,17 +49,24 @@ if os.name == "nt":
         cjk_fonts = {"NSimSun", "SimSun", "新宋体", "Microsoft YaHei", "MS Gothic",
                       "MingLiU", "PMingLiU", "KaiTi", "FangSong", "SimHei"}
         if current_font not in cjk_fonts:
-            # Try multiple CJK fonts in preference order
-            for fname in ["NSimSun", "SimSun", "新宋体"]:
+            # Try CJK-capable fonts — prefer ones that look good at larger sizes
+            for fname in ["SimSun-ExtB", "NSimSun", "SimSun", "新宋体"]:
                 font.FaceName = fname
                 font.dwFontSize.X = 0
-                font.dwFontSize.Y = 16
+                font.dwFontSize.Y = 20
                 font.FontFamily = 0x36  # FF_MODERN | FIXED_PITCH | TrueType
                 font.FontWeight = 400
                 ok = ctypes.windll.kernel32.SetCurrentConsoleFontEx(
                     handle, False, ctypes.byref(font))
                 if ok:
                     break
+        else:
+            # Already a CJK font — just ensure a comfortable size
+            if font.dwFontSize.Y < 18:
+                font.dwFontSize.X = 0
+                font.dwFontSize.Y = 20
+                ctypes.windll.kernel32.SetCurrentConsoleFontEx(
+                    handle, False, ctypes.byref(font))
     except Exception:
         pass  # Non-critical
 import atexit
@@ -989,23 +996,23 @@ SYSTEM_PROMPT_EN = """You are the narrator of a zombie apocalypse text adventure
 
 RULES:
 1. If a player action is given, your FIRST sentences must describe what happened when they did it. Then describe the new scene.
-2. Only describe what the player SEES. Do NOT assume the player picks up, uses, or does anything unless their action says so.
-3. Write 80-200 words, then end with exactly 3 choices:
+2. Do NOT assume the player picks up, grabs, or uses anything. Only describe what they SEE around them.
+3. Write 80-200 words, then end with exactly 3 choices in this format:
+
 [A] action option
 [B] action option
-[C] action option
-Each choice must be a realistic action the player can take right now. Never break character."""
+[C] action option"""
 
 SYSTEM_PROMPT_ZH = """你是丧尸末日文字冒险游戏的叙事者。用第二人称、现在时写作。短句为主，冷硬风格。描述玩家看到、听到、闻到的一切。必须用中文回复。
 
 规则：
-1. 如果给出了玩家的行动，你的开头几句必须描述那个行动的后果。然后再描述新场景。
-2. 只描述玩家看到的。不要假设玩家拿起、使用或做了任何事，除非行动中明确说了。
+1. 如果给出了玩家的行动，你的开头几句必须描述那个行动发生了什么。然后描述新场景。
+2. 不要假设玩家拿起、抓取或使用任何东西。只描述玩家看到的。
 3. 写80-200字叙事，然后以恰好3个选项结尾：
+
 [A] 行动选项
 [B] 行动选项
-[C] 行动选项
-每个选项必须是玩家现在能做的合理行动。不要打破角色。"""
+[C] 行动选项"""
 
 
 def _get_system_prompt() -> str:
@@ -1014,11 +1021,11 @@ def _get_system_prompt() -> str:
 
 def build_prompt(state: GameState, event: dict,
                  action_context: str = "", prev_narrative: str = "") -> str:
-    """Build prompt optimized for small (1-3B) models.
+    """Build prompt with labeled structure for small (1-3B) models.
 
-    The prompt reads like a story-so-far that the model continues.
-    When there's a player action, the prompt explicitly tells the model
-    to start by describing what happened.
+    Labels help the model produce structured output (proper [A][B][C]).
+    No old narrative is included — it bleeds into new output.
+    Action goes first so the model addresses it immediately.
     """
     p = state.player
     w = state.world
@@ -1027,12 +1034,6 @@ def build_prompt(state: GameState, event: dict,
 
     loc_desc = loc.get("desc_zh", loc.get("description", "")) if zh else loc.get("description", "")
     weapon_str = _item_name(p.equipped_weapon) if p.equipped_weapon else t("bare hands")
-
-    # Condense previous narrative to last 2 sentences
-    prev_summary = ""
-    if prev_narrative:
-        sentences = [s.strip() for s in re.split(r'[.。!！?？\n]', prev_narrative) if s.strip()]
-        prev_summary = ". ".join(sentences[-2:]) + "." if sentences else ""
 
     # Status alerts (only noteworthy conditions)
     alerts = []
@@ -1050,30 +1051,25 @@ def build_prompt(state: GameState, event: dict,
         if p.morale < 20: alerts.append("breaking down")
     alert_str = ", ".join(alerts)
 
+    lines = []
     if zh:
-        lines = []
-        if action_context and prev_summary:
-            lines.append(f"故事到目前为止: {prev_summary} 然后玩家决定{action_context}。")
-            lines.append(f"新场景: {w.location}——{loc_desc}")
-        else:
-            lines.append(f"场景: {w.location}——{loc_desc}")
+        if action_context:
+            lines.append(f"玩家行动: {action_context}")
+        lines.append(f"场景: {w.location}——{loc_desc}")
         lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
         if alert_str:
             lines.append(f"状态: {alert_str}")
-        lines.append(f"{event['description']}")
+        lines.append(f"事件: {event['description']}")
         if action_context:
-            lines.append("从玩家行动的后果开始写起。")
+            lines.append("先描述玩家行动的结果，再描述场景。")
     else:
-        lines = []
-        if action_context and prev_summary:
-            lines.append(f"Story so far: {prev_summary} Then the player decided to {action_context}.")
-            lines.append(f"New scene: {w.location} — {loc_desc}")
-        else:
-            lines.append(f"Scene: {w.location} — {loc_desc}")
+        if action_context:
+            lines.append(f"Player action: {action_context}")
+        lines.append(f"Scene: {w.location} — {loc_desc}")
         lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
         if alert_str:
             lines.append(f"Status: {alert_str}")
-        lines.append(f"{event['description']}")
+        lines.append(f"Event: {event['description']}")
         if action_context:
             lines.append("Start by describing what happened when the player did this.")
 
@@ -1337,20 +1333,80 @@ class RuntimeManager:
 class LLMClient:
     """Communicates with llama-server via OpenAI-compatible HTTP API."""
 
-    def generate(self, system: str, prompt: str) -> str:
-        try:
-            # Append /no_think to disable Qwen3's thinking mode
-            prompt_with_flag = prompt + "\n/no_think"
+    def _build_payload(self, system: str, prompt: str, stream: bool = False) -> dict:
+        prompt_with_flag = prompt + "\n/no_think"
+        payload = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt_with_flag},
+            ],
+            "max_tokens": Config.LLM_MAX_TOKENS,
+            "temperature": Config.LLM_TEMPERATURE,
+            "top_p": Config.LLM_TOP_P,
+        }
+        if stream:
+            payload["stream"] = True
+        return payload
 
-            payload = {
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt_with_flag},
-                ],
-                "max_tokens": Config.LLM_MAX_TOKENS,
-                "temperature": Config.LLM_TEMPERATURE,
-                "top_p": Config.LLM_TOP_P,
-            }
+    @staticmethod
+    def _fallback(error_msg: str = "") -> str:
+        if Config.LANG == "zh":
+            base = "寂静持续蔓延。你的电台嘶嘶作响，但什么也没收到。"
+            if error_msg:
+                base = f"寂静持续蔓延。你的思绪飘散了…（{error_msg}）"
+            return f"{base}\n\n[A] 再试一次\n[B] 四处看看\n[C] 等待"
+        base = "The silence stretches on. Your radio crackles but finds nothing."
+        if error_msg:
+            base = f"The silence stretches on. Your mind drifts... ({error_msg})"
+        return f"{base}\n\n[A] Try again\n[B] Look around\n[C] Wait"
+
+    def generate_stream(self, system: str, prompt: str, on_token=None) -> str:
+        """Stream tokens from the LLM. Calls on_token(str) for each chunk.
+        Returns the full accumulated text."""
+        try:
+            payload = self._build_payload(system, prompt, stream=True)
+            resp = requests.post(
+                f"{Config.SERVER_URL}/v1/chat/completions",
+                json=payload,
+                timeout=120,
+                stream=True,
+            )
+            resp.raise_for_status()
+
+            full_text = ""
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]  # strip "data: "
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    token = delta.get("content", "")
+                    if token:
+                        full_text += token
+                        if on_token:
+                            on_token(token)
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+            content = full_text.strip()
+            if content:
+                return content
+
+            # Empty stream — try reasoning extraction fallback
+            return self._fallback()
+
+        except requests.ConnectionError:
+            return self._fallback()
+        except Exception as e:
+            return self._fallback(f"LLM error: {e}")
+
+    def generate(self, system: str, prompt: str) -> str:
+        """Non-streaming generate (used for repair prompts)."""
+        try:
+            payload = self._build_payload(system, prompt)
             resp = requests.post(
                 f"{Config.SERVER_URL}/v1/chat/completions",
                 json=payload,
@@ -1361,8 +1417,6 @@ class LLMClient:
             msg = data["choices"][0]["message"]
             content = (msg.get("content") or "").strip()
 
-            # Fallback: if content is empty but reasoning_content exists,
-            # extract usable text from the model's thinking output
             if not content:
                 reasoning = (msg.get("reasoning_content") or "").strip()
                 if reasoning:
@@ -1370,19 +1424,12 @@ class LLMClient:
 
             if content:
                 return content
-            else:
-                if Config.LANG == "zh":
-                    return "电台嗡嗡作响。信号出了问题。\n\n[A] 再试一次\n[B] 四处看看\n[C] 等待"
-                return "The radio hums with static. Something is wrong with the signal.\n\n[A] Try again\n[B] Look around\n[C] Wait"
+            return self._fallback()
 
         except requests.ConnectionError:
-            if Config.LANG == "zh":
-                return "寂静持续蔓延。你的电台嘶嘶作响，但什么也没收到。\n\n[A] 再试一次\n[B] 四处看看\n[C] 等待"
-            return "The silence stretches on. Your radio crackles but finds nothing.\n\n[A] Try again\n[B] Look around\n[C] Wait"
+            return self._fallback()
         except Exception as e:
-            if Config.LANG == "zh":
-                return f"寂静持续蔓延。你的思绪飘散了…（LLM错误: {e}）\n\n[A] 再试一次\n[B] 四处看看\n[C] 等待"
-            return f"The silence stretches on. Your mind drifts... (LLM error: {e})\n\n[A] Try again\n[B] Look around\n[C] Wait"
+            return self._fallback(f"LLM error: {e}")
 
     @staticmethod
     def _extract_from_reasoning(reasoning: str) -> str:
@@ -1746,6 +1793,38 @@ class Display:
             self.console.print(f"\n{text}\n", style="white")
         else:
             print(f"\n{text}\n")
+
+    def start_narrative_stream(self):
+        """Print a newline to begin streaming narrative output."""
+        self._stream_buf = ""
+        self._stream_choices_started = False
+        print()
+
+    def print_token(self, token: str):
+        """Print a single token during streaming, suppressing [A][B][C] choices."""
+        if self._stream_choices_started:
+            return
+        # Buffer to detect choice markers that may arrive across tokens
+        self._stream_buf += token
+        # Check if we've hit a choice marker
+        if re.search(r'\[A\]', self._stream_buf):
+            # Print everything before the choice marker
+            before = re.split(r'\[A\]', self._stream_buf, maxsplit=1)[0]
+            if before:
+                print(before, end="", flush=True)
+            self._stream_choices_started = True
+            return
+        # Flush buffer but keep last 3 chars (in case [A] spans tokens)
+        if len(self._stream_buf) > 3:
+            to_print = self._stream_buf[:-3]
+            self._stream_buf = self._stream_buf[-3:]
+            print(to_print, end="", flush=True)
+
+    def end_narrative_stream(self):
+        """Flush remaining buffer and print newline."""
+        if not self._stream_choices_started and self._stream_buf:
+            print(self._stream_buf, end="", flush=True)
+        print("\n")
 
     def print_choices(self, options: dict):
         if HAS_RICH:
@@ -2153,25 +2232,32 @@ class DeadStaticGame:
             prev_narrative=self.last_narrative,
         )
         self.display.print_loading()
-        raw_output = self.llm.generate(_get_system_prompt(), prompt)
+
+        # 5a. Stream LLM output token-by-token for live display
+        self.display.start_narrative_stream()
+        raw_output = self.llm.generate_stream(
+            _get_system_prompt(), prompt,
+            on_token=self.display.print_token,
+        )
+        self.display.end_narrative_stream()
+
+        # 5b. Parse the full output to extract choices
         parsed = parse_llm_output(raw_output, self.state)
 
-        # 5b. If parsing failed, try a repair prompt to get just the choices
+        # 5c. If parsing failed, try a repair prompt (non-streaming)
         if parsed.get("parse_failed"):
             repair_input = raw_output + "\n\n" + _get_repair_prompt()
             repair_raw = self.llm.generate(_get_system_prompt(), repair_input)
             repair_parsed = parse_llm_output(repair_raw, self.state)
             if not repair_parsed.get("parse_failed"):
-                # Keep original narrative, use repaired choices
                 parsed["options"] = repair_parsed["options"]
                 parsed["parse_failed"] = False
             else:
-                # Still failed — context-aware fallbacks are already in place
                 self.display.print_system_message(t("(Auto-generated choices for this turn)"))
 
-        # 6. Store narrative for next turn's continuity, then display
+        # 6. Store narrative for next turn's continuity
+        #    (narrative already displayed via streaming, so only print choices)
         self.last_narrative = parsed["narrative"]
-        self.display.print_narrative(parsed["narrative"])
         self.current_options = parsed["options"]
         self.display.print_choices(self.current_options)
         # Show command hints
