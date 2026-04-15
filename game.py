@@ -574,6 +574,23 @@ def _item_name(key: str) -> str:
     return key
 
 
+def _item_key_from_input(name: str) -> Optional[str]:
+    """Resolve a user-typed item name (English or Chinese) to the canonical English key."""
+    name = name.strip().lower()
+    # Direct match (English key)
+    if name in ITEMS:
+        return name
+    # Chinese name lookup
+    for key, item in ITEMS.items():
+        if item.get("name_zh", "").lower() == name or key.lower() == name:
+            return key
+    # Partial match (substring)
+    for key, item in ITEMS.items():
+        if name in key.lower() or name in item.get("name_zh", "").lower():
+            return key
+    return None
+
+
 def _item_desc(key: str) -> str:
     """Return localized item description."""
     item = ITEMS.get(key, {})
@@ -694,6 +711,48 @@ EVENT_POOL = {
             "title": "Final broadcast", "title_zh": "最后的广播",
             "template": "The radio hisses one last time: 'Last helicopter. Dawn. Day fifteen. Bridge checkpoint. No exceptions.' Then silence forever.",
             "template_zh": '电台最后一次嘶鸣:\u201c最后一架直升机。黎明。第十五天。桥头检查站。没有例外。\u201d 然后永远沉默了。',
+        },
+        {
+            "id": "smoke_on_horizon",
+            "trigger_day": 4, "once": True,
+            "title": "Smoke on the horizon", "title_zh": "地平线上的浓烟",
+            "template": "Thick black smoke rises from the east side of the city. Something big is burning. Gunshots echo faintly — someone is still fighting over there.",
+            "template_zh": "城市东侧升起浓厚的黑烟。什么大型建筑在燃烧。隐约传来枪声——那边还有人在战斗。",
+        },
+        {
+            "id": "power_grid_failure",
+            "trigger_day": 6, "once": True,
+            "title": "Power grid failure", "title_zh": "电网崩溃",
+            "template": "The last working streetlights flicker and die. The city plunges into true darkness. From now on, nights will be pitch black.",
+            "template_zh": "最后还亮着的路灯闪了几下，熄灭了。城市陷入真正的黑暗。从今往后，夜晚将是伸手不见五指的。",
+        },
+        {
+            "id": "refugee_camp_fallen",
+            "trigger_day": 7, "once": True,
+            "title": "Screams in the distance", "title_zh": "远处的尖叫",
+            "template": "A wave of screaming erupts from the south — then cuts off abruptly. The refugee camp at the school must have fallen. You hear the horde moving.",
+            "template_zh": "南方爆发出一阵尖叫——然后戛然而止。学校的难民营一定沦陷了。你听到尸群在移动。",
+        },
+        {
+            "id": "airdrop",
+            "trigger_day": 9, "once": True,
+            "title": "Supply airdrop", "title_zh": "空投补给",
+            "template": "A military cargo plane roars overhead. A crate drops with a parachute, landing somewhere to the north. Others will have seen it too.",
+            "template_zh": "一架军用运输机从头顶轰鸣而过。一个带降落伞的箱子落在北边某处。别人肯定也看到了。",
+        },
+        {
+            "id": "rain_of_ash",
+            "trigger_day": 10, "once": True,
+            "title": "Rain of ash", "title_zh": "灰烬之雨",
+            "template": "Grey ash drifts down like snow. The napalm strikes have started in the outer sectors. The air smells of burning plastic and something worse.",
+            "template_zh": "灰烬像雪一样飘落。外围区域的凝固汽油弹打击已经开始。空气中弥漫着燃烧塑料的味道，还有更糟的东西。",
+        },
+        {
+            "id": "dead_soldiers",
+            "trigger_day": 11, "once": True,
+            "title": "Abandoned checkpoint", "title_zh": "废弃的检查站",
+            "template": "You find a military checkpoint. The soldiers are dead — some shot, some bitten. Their radio plays static. A map on the wall shows the evacuation route marked in red.",
+            "template_zh": "你发现了一个军事检查站。士兵们已经死了——有的中弹，有的被咬。他们的电台只有静电噪音。墙上的地图用红线标出了撤离路线。",
         },
     ],
 }
@@ -840,11 +899,25 @@ class EventSystem:
 class RulesEngine:
 
     @staticmethod
-    def tick_survival(player: Player):
-        """Per-turn resource drain."""
-        player.hunger = max(0, player.hunger - random.randint(4, 7))
-        player.thirst = max(0, player.thirst - random.randint(5, 9))
-        player.stamina = max(0, player.stamina - random.randint(3, 6))
+    def tick_survival(player: Player, weather: Weather = Weather.CLEAR):
+        """Per-turn resource drain. Weather affects drain rates."""
+        hunger_drain = random.randint(4, 7)
+        thirst_drain = random.randint(5, 9)
+        stamina_drain = random.randint(3, 6)
+
+        # Weather modifiers
+        if weather == Weather.RAIN:
+            thirst_drain = max(1, thirst_drain - 2)  # Rain helps thirst slightly
+            stamina_drain += 2  # But drains stamina (cold, wet)
+        elif weather == Weather.STORM:
+            stamina_drain += 3  # Storms are exhausting
+            player.morale -= 2  # Demoralizing
+        elif weather == Weather.FOG:
+            pass  # Fog: no survival effect, but affects threat (handled in advance_time)
+
+        player.hunger = max(0, player.hunger - hunger_drain)
+        player.thirst = max(0, player.thirst - thirst_drain)
+        player.stamina = max(0, player.stamina - stamina_drain)
 
         if player.hunger <= 0:
             player.health -= random.randint(5, 10)
@@ -856,6 +929,17 @@ class RulesEngine:
         # Infection ticks
         if player.infection > 0:
             player.infection = min(100, player.infection + random.randint(1, 3))
+
+        # Morale consequences
+        if player.morale <= 10:
+            # Despair: lose health slowly, refuse to eat/drink efficiently
+            player.health -= random.randint(1, 3)
+        elif player.morale <= 25:
+            # Demoralized: stamina drains faster
+            player.stamina = max(0, player.stamina - 2)
+        elif player.morale >= 80:
+            # High spirits: slight stamina recovery
+            player.stamina = min(100, player.stamina + 1)
 
         # Morale bounds
         player.morale = max(0, min(100, player.morale))
@@ -870,7 +954,9 @@ class RulesEngine:
             weapon_noise = ITEMS[player.equipped_weapon].get("noise", 0)
 
         roll = random.randint(1, 20)
-        player_power = roll + player.skills["combat"] * 3 + weapon_bonus // 5
+        # Morale affects combat effectiveness
+        morale_mod = -2 if player.morale <= 20 else (1 if player.morale >= 75 else 0)
+        player_power = roll + player.skills["combat"] * 3 + weapon_bonus // 5 + morale_mod
         enemy_power = threat_level * 3 + random.randint(1, 10)
 
         result = {"noise_generated": weapon_noise}
@@ -917,9 +1003,14 @@ class RulesEngine:
         return result
 
     @staticmethod
-    def resolve_stealth(player: Player, threat_level: int) -> dict:
+    def resolve_stealth(player: Player, threat_level: int, weather: Weather = Weather.CLEAR) -> dict:
         roll = random.randint(1, 20)
         stealth_power = roll + player.skills["stealth"] * 3
+        # Fog and rain provide stealth bonuses
+        if weather == Weather.FOG:
+            stealth_power += 3
+        elif weather in (Weather.RAIN, Weather.STORM):
+            stealth_power += 2  # Noise cover
 
         if stealth_power > threat_level * 2 + 5:
             player.skills["stealth"] = min(10, player.skills["stealth"] + 0.2)
@@ -984,10 +1075,19 @@ class RulesEngine:
             return GameOver.DEAD
         if state.player.infection >= 100:
             return GameOver.INFECTED
-        if (state.world.location == "Evacuation Zone"
-                and state.world.day >= 15
-                and state.world.time_of_day == TimeOfDay.DAWN):
-            return GameOver.ESCAPED
+        # Win: reach Evacuation Zone on day 14 (dusk/night) or day 15 (dawn)
+        if state.world.location == "Evacuation Zone":
+            if (state.world.day == 15 and state.world.time_of_day == TimeOfDay.DAWN):
+                return GameOver.ESCAPED
+            if (state.world.day == 14 and state.world.time_of_day in (TimeOfDay.DUSK, TimeOfDay.NIGHT)):
+                return GameOver.ESCAPED
+            if state.world.day >= 15 and state.world.time_of_day != TimeOfDay.DAWN:
+                # Missed the helicopter
+                pass
+        # Day 16+: too late, helicopter left (forced death by despair)
+        if state.world.day > 15:
+            state.player.morale = 0
+            state.player.health -= 50  # Despair: missed evacuation
         return GameOver.NONE
 
     @staticmethod
@@ -1007,7 +1107,13 @@ class RulesEngine:
         base = loc.get("base_threat", 3)
         time_mod = 2 if world.time_of_day == TimeOfDay.NIGHT else (1 if world.time_of_day == TimeOfDay.DUSK else 0)
         day_mod = min(world.day // 3, 3)
-        world.threat_level = min(10, base + time_mod + day_mod + random.randint(-1, 1))
+        # Weather affects threat: fog reduces visibility (higher threat), storms scatter zombies (lower)
+        weather_mod = 0
+        if world.weather == Weather.FOG:
+            weather_mod = 1  # Harder to see threats coming
+        elif world.weather == Weather.STORM:
+            weather_mod = -1  # Thunder scatters zombies
+        world.threat_level = min(10, max(0, base + time_mod + day_mod + weather_mod + random.randint(-1, 1)))
         world.noise_level = max(0, world.noise_level - 1)
 
 
@@ -1018,28 +1124,30 @@ class RulesEngine:
 SYSTEM_PROMPT_EN = """You narrate a zombie text adventure. Second person, present tense. Be concise.
 
 RULES:
-1. If a player action is given, describe what happened FIRST.
-2. Focus on what is HAPPENING and what the player can DO. No filler. No vague feelings. No "eyes watching you" or "something feels wrong". Describe concrete things: a sound, a door, a person, a threat.
-3. Do NOT assume the player picks up or uses anything.
-4. Never write dream or wake-up scenes unless told.
-5. Write 50-100 words, then end with 3 choices:
+1. The EVENT is the most important part. Your narrative MUST describe what the event says.
+2. If a player action is given, describe the result FIRST, then the event.
+3. Describe concrete things the player sees, hears, or can interact with.
+4. Do NOT assume the player picks up, grabs, or uses anything. Choices should be actions like "search", "move to", "hide", "talk to", not "pick up X".
+5. Choices must be realistic actions a person could actually do in the scene.
+6. Write 50-100 words, then end with exactly 3 choices:
 
-[A] action option
-[B] action option
-[C] action option"""
+[A] action
+[B] action
+[C] action"""
 
 SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称，现在时。简洁有力。必须用中文。
 
 规则：
-1. 如果给了玩家行动，先描述行动结果。
-2. 只写正在发生的事和玩家能做的事。不要写废话。不要写"感觉有什么在注视""空气中弥漫着不安"之类的套话。写具体的东西：一个声音、一扇门、一个人、一个威胁。
-3. 不要假设玩家拿起或使用任何东西。
-4. 不要写梦境或惊醒场景。
-5. 写50-100字叙事，然后给3个选项：
+1. 事件是最重要的部分。你的叙述必须描写事件中发生的事。
+2. 如果给了玩家行动，先描述行动结果，再描述事件。
+3. 描写玩家看到、听到、能互动的具体事物。
+4. 不要假设玩家拿起或使用任何东西。选项应该是"搜索""前往""躲藏""交谈"等动作，不要写"拿起X"。
+5. 选项必须是场景中一个人真的能做的合理行动。
+6. 写50-100字叙事，然后给恰好3个选项：
 
-[A] 行动选项
-[B] 行动选项
-[C] 行动选项"""
+[A] 行动
+[B] 行动
+[C] 行动"""
 
 
 def _get_system_prompt() -> str:
@@ -1105,27 +1213,33 @@ def build_prompt(state: GameState, event: dict,
 
     detail = random.choice(details_zh if zh else details_en)
 
+    is_story = event.get("is_story", False)
+
     lines = []
     if zh:
         if action_context:
             lines.append(f"玩家行动: {action_context}")
+        if alert_str:
+            lines.append(f"玩家状态: {alert_str}")
         lines.append(f"场景: {loc_name}——{loc_desc}")
         lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
         lines.append(f"细节: {detail}。")
-        if alert_str:
-            lines.append(f"状态: {alert_str}")
         lines.append(f"事件: {event['description']}")
+        if is_story:
+            lines.append("重要：这是关键剧情事件，你必须围绕这个事件展开叙述。")
         if action_context:
-            lines.append("先描述玩家行动的结果，再描述场景。")
+            lines.append("先描述玩家行动的结果，再描述事件。")
     else:
         if action_context:
             lines.append(f"Player action: {action_context}")
+        if alert_str:
+            lines.append(f"Player status: {alert_str}")
         lines.append(f"Scene: {w.location} — {loc_desc}")
         lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
         lines.append(f"Detail: {detail}.")
-        if alert_str:
-            lines.append(f"Status: {alert_str}")
         lines.append(f"Event: {event['description']}")
+        if is_story:
+            lines.append("IMPORTANT: This is a key story event. Your narrative MUST focus on this event.")
         if action_context:
             lines.append("Start by describing what happened when the player did this.")
 
@@ -2188,19 +2302,24 @@ class DeadStaticGame:
             self.display.print_system_message(t("Game saved."))
             return True
         elif cmd.startswith("use "):
-            item_name = cmd[4:].strip()
-            result = self.rules.use_item(self.state.player, item_name)
-            self.display.print_system_message(result["message"])
+            raw_name = cmd[4:].strip()
+            item_key = _item_key_from_input(raw_name)
+            if item_key:
+                result = self.rules.use_item(self.state.player, item_key)
+                self.display.print_system_message(result["message"])
+            else:
+                self.display.print_system_message(t("You don't have that."))
             return True
         elif cmd.startswith("equip "):
-            item_name = cmd[6:].strip()
-            if item_name in self.state.player.inventory:
-                item = ITEMS.get(item_name, {})
+            raw_name = cmd[6:].strip()
+            item_key = _item_key_from_input(raw_name)
+            if item_key and item_key in self.state.player.inventory:
+                item = ITEMS.get(item_key, {})
                 if item.get("type") == "weapon":
-                    self.state.player.equipped_weapon = item_name
-                    self.display.print_system_message(t("Equipped {item}.", item=item_name))
+                    self.state.player.equipped_weapon = item_key
+                    self.display.print_system_message(t("Equipped {item}.", item=_item_name(item_key)))
                 else:
-                    self.display.print_system_message(t("Can't equip {item} as a weapon.", item=item_name))
+                    self.display.print_system_message(t("Can't equip {item} as a weapon.", item=_item_name(item_key)))
             else:
                 self.display.print_system_message(t("You don't have that."))
             return True
@@ -2267,8 +2386,8 @@ class DeadStaticGame:
 
     def game_turn(self):
         """One full game turn."""
-        # 1. Tick survival resources
-        self.rules.tick_survival(self.state.player)
+        # 1. Tick survival resources (weather affects drain rates)
+        self.rules.tick_survival(self.state.player, self.state.world.weather)
 
         # 2. Check game over from resource drain
         go = self.rules.check_game_over(self.state)
@@ -2361,10 +2480,12 @@ class DeadStaticGame:
         # 8. Resolve action mechanically
         extra_context = []
 
-        # Movement detection
+        # Movement detection (match English name, Chinese name, or partial)
         loc = LOCATIONS.get(self.state.world.location, {})
+        action_lower = chosen_action.lower()
         for conn in loc.get("connections", []):
-            if conn.lower() in chosen_action.lower():
+            conn_zh = LOCATIONS.get(conn, {}).get("name_zh", "")
+            if conn.lower() in action_lower or (conn_zh and conn_zh in chosen_action):
                 self.state.world.location = conn
                 if conn not in self.state.world.discovered_locations:
                     self.state.world.discovered_locations.append(conn)
@@ -2383,7 +2504,7 @@ class DeadStaticGame:
         stealth_keywords = ["sneak", "hide", "stealth", "quiet", "avoid", "creep", "slip past",
                             "潜行", "躲", "藏", "安静", "避开", "悄悄", "绕过", "隐蔽"]
         if any(kw in chosen_action.lower() for kw in stealth_keywords):
-            result = self.rules.resolve_stealth(self.state.player, self.state.world.threat_level)
+            result = self.rules.resolve_stealth(self.state.player, self.state.world.threat_level, self.state.world.weather)
             extra_context.append(f"[Stealth: {result['outcome']}. {result['narrative_hint']}]")
 
         # Scavenging / loot
@@ -2399,15 +2520,36 @@ class DeadStaticGame:
                 else:
                     extra_context.append(f"[Spotted {_item_name(found)} but inventory is full]")
 
+        # NPC interaction detection (survivor encounters)
+        help_keywords = ["help", "save", "assist", "protect", "share", "give", "aid", "together",
+                         "帮", "救", "协助", "保护", "分享", "给", "援助", "一起", "带上", "收留"]
+        abandon_keywords = ["ignore", "leave", "abandon", "walk away", "alone", "refuse",
+                            "忽略", "离开", "抛弃", "走开", "独自", "拒绝", "不管", "丢下"]
+        if event["id"] == "survivor_encounter":
+            if any(kw in chosen_action.lower() for kw in help_keywords):
+                self.state.player.people_saved += 1
+                self.state.player.morale = min(100, self.state.player.morale + random.randint(5, 15))
+                # Helping costs resources but boosts morale
+                self.state.player.hunger = max(0, self.state.player.hunger - random.randint(5, 10))
+                zh = Config.LANG == "zh"
+                extra_context.append(f"[{'救助了一名幸存者，士气提升' if zh else 'Helped a survivor. Morale boosted'}]")
+            elif any(kw in chosen_action.lower() for kw in abandon_keywords):
+                self.state.player.people_abandoned += 1
+                self.state.player.morale = max(0, self.state.player.morale - random.randint(5, 15))
+                zh = Config.LANG == "zh"
+                extra_context.append(f"[{'抛弃了一名幸存者，士气下降' if zh else 'Abandoned a survivor. Morale dropped'}]")
+
         # Rest detection
         rest_keywords = ["rest", "sleep", "camp", "wait", "recover",
                          "休息", "睡", "扎营", "等待", "恢复", "歇"]
         if any(kw in chosen_action.lower() for kw in rest_keywords):
             stamina_restore = random.randint(15, 30)
+            hp_restore = random.randint(3, 8)
             self.state.player.stamina = min(100, self.state.player.stamina + stamina_restore)
+            self.state.player.health = min(100, self.state.player.health + hp_restore)
             morale_change = random.randint(-5, 10)
             self.state.player.morale = max(0, min(100, self.state.player.morale + morale_change))
-            extra_context.append(f"[Rested. +{stamina_restore} stamina]")
+            extra_context.append(f"[Rested. +{stamina_restore} stamina, +{hp_restore} HP]")
 
         # 9. Save the action + outcome for next turn's LLM prompt
         self.last_action_context = chosen_action
