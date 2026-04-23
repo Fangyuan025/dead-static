@@ -34,7 +34,7 @@ Double-click **`Play DeadStatic.bat`**. That's it.
 ### For developers (from source)
 
 ```bash
-pip install rich requests huggingface-hub
+pip install -r requirements.txt
 python game.py
 ```
 
@@ -74,6 +74,23 @@ Player Input
 The game starts `llama-server.exe` as a background subprocess and communicates via its OpenAI-compatible HTTP API. The server auto-shuts down when the game exits. NVIDIA GPUs are auto-detected for CUDA acceleration; CPU mode works fine too.
 
 **Model:** [Josiefied-Qwen3-1.7B-abliterated-v1](https://huggingface.co/Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf) (Q4_0 quantization, 1.05 GB)
+
+### Episodic Memory (RAG)
+
+The 1.7B model has a tight context window — without help, a 14-day playthrough forgets what happened on day 3 by day 10. DEAD STATIC solves this with a lightweight **RAG (Retrieval-Augmented Generation) layer**:
+
+1. **At the end of every turn**, a second, compact LLM call summarizes what just happened in one sentence (≤ 40 chars Chinese / ≤ 20 words English). Adds ~0.2–0.4s per turn.
+2. The summary is tokenized (jieba for Chinese, whitespace for English) and stored in a local **BM25 index** under `rag_data/`.
+3. **At the start of every turn**, the game queries that index with `(location + weather + time + current action)` and injects the top-3 relevant past memories into the prompt as "Past echoes".
+4. **Revisit detection**: if the player returns to a location they've been to before, a strong imperative is added — *"You've been here before. Last time: [summary]. Start with 'again' and echo what happened."* — so the model actually uses the memory instead of ignoring it.
+
+**Result:** on a revisit to a location 10 turns later, the narrative opens with "You return again..." and carries forward specific details from the earlier visit — antibiotics you found, the growl down the hallway, the NPC you helped.
+
+Both toggles live in the settings menu:
+- **Story memory (RAG)** — the retrieval layer itself (on by default)
+- **LLM summary** — use a 2nd LLM call for sharper summaries (on by default; disable if the extra latency bothers you — the mechanical fallback still works)
+
+Implementation: `rag/episodic.py` (~310 lines, BM25 + jieba, no heavy deps) and `rag/summarizer.py` (~100 lines). Zero additional downloads.
 
 ### The 15-Day Structure
 
@@ -226,11 +243,17 @@ Edit `SYSTEM_PROMPT`. The game mechanics stay the same regardless of narrative s
 ## Project Structure
 
 ```
-game.py           Main game — all systems in a single file (~1800 lines)
-build.py          PyInstaller build script
-package.py        Bundles exe + llama-server + GGUF model
-installer.iss     Inno Setup script for Windows installer
-requirements.txt  Python dependencies (rich, requests, huggingface-hub)
+game.py             Main game — all systems in a single file (~2600 lines)
+rag/
+  episodic.py       BM25 + jieba episodic memory store
+  summarizer.py     LLM turn-summarizer
+build.py            PyInstaller build script
+package.py          Bundles exe + llama-server + GGUF model
+installer.iss       Inno Setup script for Windows installer
+requirements.txt    Python dependencies
+test_rag.py         Headless unit tests for the RAG module (18 cases)
+test_summarizer.py  Summarizer-quality tests against live llama-server
+test_rag_live.py    End-to-end RAG scripted playthrough (9 cases)
 ```
 
 ---

@@ -78,6 +78,15 @@ from typing import Optional
 
 import requests
 
+# ─── Try to import RAG module (graceful degrade if deps missing) ───
+try:
+    from rag import EpisodicMemory, summarize_turn as _rag_summarize_turn
+    HAS_RAG = True
+except Exception:
+    HAS_RAG = False
+    EpisodicMemory = None  # type: ignore
+    _rag_summarize_turn = None  # type: ignore
+
 # ─── Try to import Rich for fancy TUI, fallback to plain text ───
 try:
     from rich.console import Console
@@ -133,6 +142,20 @@ class Config:
 
     # Language: "en" or "zh"
     LANG = "en"
+
+    # RAG (Retrieval-Augmented Generation) — Phase 1: episodic memory
+    # When enabled, each turn is summarized and stored; relevant past turns
+    # are retrieved and injected into the LLM prompt to keep long games coherent.
+    RAG_ENABLED = True
+    RAG_DIR = os.path.join(_BASE_DIR, "rag_data")
+    RAG_TOP_K = 3              # how many past memories to inject per turn
+    RAG_MIN_SCORE = 0.5        # BM25 score threshold
+    RAG_EXCLUDE_LAST = 1       # skip the N most recent turns (already in immediate ctx)
+    RAG_MIN_TURN = 3           # only start injecting once game has > N turns of history
+    # Phase 1.5: use a 2nd LLM call to produce compact turn summaries (better retrieval quality).
+    # Adds ~1-2s per turn; disable if gameplay feels laggy.
+    RAG_LLM_SUMMARY = True
+    RAG_LLM_SUMMARY_MAX_TOKENS = 60
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1155,7 +1178,9 @@ def _get_system_prompt() -> str:
 
 
 def build_prompt(state: GameState, event: dict,
-                 action_context: str = "", prev_narrative: str = "") -> str:
+                 action_context: str = "", prev_narrative: str = "",
+                 memory_snippets: str = "",
+                 revisit_memory: str = "") -> str:
     """Build prompt with labeled structure for small (1-3B) models.
 
     Labels help the model produce structured output (proper [A][B][C]).
@@ -1224,7 +1249,17 @@ def build_prompt(state: GameState, event: dict,
         lines.append(f"场景: {loc_name}——{loc_desc}")
         lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
         lines.append(f"细节: {detail}。")
+        if memory_snippets:
+            lines.append("往事回响（之前经历过的片段，保持前后一致）:")
+            lines.append(memory_snippets)
         lines.append(f"事件: {event['description']}")
+        # Strong directive for revisit: same location as a past memory.
+        # Small models respond better to an imperative placed close to the generation point.
+        if revisit_memory:
+            lines.append(
+                f"重要：这不是玩家第一次来这里。上次：{revisit_memory}。"
+                f"叙述开头必须点出'再次'，可以顺带呼应上次在这里发生的事。"
+            )
         if is_story:
             lines.append("重要：这是关键剧情事件，你必须围绕这个事件展开叙述。")
         if action_context:
@@ -1237,7 +1272,15 @@ def build_prompt(state: GameState, event: dict,
         lines.append(f"Scene: {w.location} — {loc_desc}")
         lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
         lines.append(f"Detail: {detail}.")
+        if memory_snippets:
+            lines.append("Past echoes (prior events — keep continuity):")
+            lines.append(memory_snippets)
         lines.append(f"Event: {event['description']}")
+        if revisit_memory:
+            lines.append(
+                f"IMPORTANT: The player has been here before. Last time: {revisit_memory}. "
+                f"The opening must use 'again'; feel free to briefly echo what happened here."
+            )
         if is_story:
             lines.append("IMPORTANT: This is a key story event. Your narrative MUST focus on this event.")
         if action_context:
@@ -2159,6 +2202,14 @@ class DeadStaticGame:
         self.current_options = {}
         self.last_action_context = ""  # Tracks what the player did last turn
         self.last_narrative = ""  # LLM's previous narrative output for continuity
+        # RAG: episodic memory (long-horizon coherence via BM25 retrieval).
+        # Session id defaults to "default" and is refreshed on each new_game().
+        self.memory = None
+        if HAS_RAG and Config.RAG_ENABLED:
+            try:
+                self.memory = EpisodicMemory("current", Config.RAG_DIR)
+            except Exception:
+                self.memory = None
 
     def initialize_llm(self):
         """Initialize the LLM: download runtime + model if needed, start server."""
@@ -2228,6 +2279,12 @@ class DeadStaticGame:
     def new_game(self):
         self.state = GameState()
         self.events = EventSystem()
+        # Reset episodic memory for a fresh playthrough
+        if self.memory is not None:
+            try:
+                self.memory.reset()
+            except Exception:
+                pass
 
         self.display.clear()
         name = self.display.get_input(t("What is your name, survivor? ")) or t("Survivor")
@@ -2259,9 +2316,26 @@ class DeadStaticGame:
             print(f"  Model: {model_status}")
             print(f"  Runtime: {server_status}")
 
+            # Memory (RAG) status line
+            if HAS_RAG:
+                rag_status = "ON" if Config.RAG_ENABLED else "OFF"
+                sum_status = "ON" if Config.RAG_LLM_SUMMARY else "OFF"
+                if Config.LANG == "zh":
+                    rag_label = f"  剧情记忆 (RAG): {rag_status}  |  LLM 摘要: {sum_status}"
+                else:
+                    rag_label = f"  Story memory (RAG): {rag_status}  |  LLM summary: {sum_status}"
+                print(f"\n{rag_label}")
+
             print(f"\n  {t('[1] Run diagnostics')}")
             print(f"  {t('[2] Re-download model & runtime')}")
             print(f"  {t('[3] Language: {lang}', lang=lang_display)}")
+            if HAS_RAG:
+                if Config.LANG == "zh":
+                    print(f"  [4] 切换剧情记忆 (RAG)")
+                    print(f"  [5] 切换 LLM 摘要（慢但更准）")
+                else:
+                    print(f"  [4] Toggle story memory (RAG)")
+                    print(f"  [5] Toggle LLM summary (slower but sharper)")
             print(f"  {t('[B] Back')}")
 
             choice = self.display.get_input(t("Choose: ")).strip()
@@ -2277,6 +2351,18 @@ class DeadStaticGame:
                 Config.LANG = "en" if Config.LANG == "zh" else "zh"
                 new_lang = "中文" if Config.LANG == "zh" else "English"
                 self.display.print_system_message(t("Language switched to: {lang}", lang=new_lang))
+                time.sleep(0.5)
+            elif choice == '4' and HAS_RAG:
+                Config.RAG_ENABLED = not Config.RAG_ENABLED
+                state = "ON" if Config.RAG_ENABLED else "OFF"
+                msg = f"剧情记忆已{'开启' if Config.RAG_ENABLED else '关闭'}" if Config.LANG == "zh" else f"Story memory: {state}"
+                self.display.print_system_message(msg)
+                time.sleep(0.5)
+            elif choice == '5' and HAS_RAG:
+                Config.RAG_LLM_SUMMARY = not Config.RAG_LLM_SUMMARY
+                state = "ON" if Config.RAG_LLM_SUMMARY else "OFF"
+                msg = f"LLM 摘要已{'开启' if Config.RAG_LLM_SUMMARY else '关闭'}" if Config.LANG == "zh" else f"LLM summary: {state}"
+                self.display.print_system_message(msg)
                 time.sleep(0.5)
             elif choice.upper() == 'B':
                 break
@@ -2403,11 +2489,59 @@ class DeadStaticGame:
         self.display.print_status_bar(self.state)
         self.display.print_event_title(event["title"], event.get("is_story", False))
 
-        # 5. Build prompt with previous narrative + action for story continuity
+        # 5. Build prompt with previous narrative + action for story continuity.
+        #    RAG: retrieve relevant past memories (location / weather / action based)
+        #    and inject as "past echoes" so long games keep continuity.
+        memory_snippets = ""
+        revisit_memory = ""
+        if (self.memory is not None
+                and Config.RAG_ENABLED
+                and self.state.turn >= Config.RAG_MIN_TURN):
+            try:
+                query_parts = [
+                    self.state.world.location,
+                    LOCATIONS.get(self.state.world.location, {}).get("name_zh", ""),
+                    self.state.world.time_of_day.value,
+                    self.state.world.weather.value,
+                    event.get("title", ""),
+                    event.get("description", ""),
+                    self.last_action_context,
+                ]
+                query_text = " ".join(p for p in query_parts if p)
+                hits = self.memory.query(
+                    query_text,
+                    k=Config.RAG_TOP_K,
+                    exclude_last=Config.RAG_EXCLUDE_LAST,
+                    min_score=Config.RAG_MIN_SCORE,
+                )
+                memory_snippets = self.memory.format_for_prompt(hits, lang=Config.LANG)
+
+                # Revisit detection: is the player back at a location they were
+                # at before? Find the most recent past entry with the same location.
+                # Small models need a pointed instruction to actually use context.
+                # Prefer the LLM-generated summary (semantic content like "found
+                # antibiotics") over raw_narrative_head (atmospheric opener), since
+                # the summary is what we actually want the model to echo.
+                current_loc = self.state.world.location
+                for entry in reversed(self.memory.entries[:-Config.RAG_EXCLUDE_LAST]
+                                      if Config.RAG_EXCLUDE_LAST > 0
+                                      else self.memory.entries):
+                    if entry.location == current_loc:
+                        fragment = (entry.summary or entry.raw_narrative_head or "").strip()
+                        if len(fragment) > 100:
+                            fragment = fragment[:100] + "…"
+                        revisit_memory = fragment
+                        break
+            except Exception:
+                memory_snippets = ""
+                revisit_memory = ""
+
         prompt = build_prompt(
             self.state, event,
             action_context=self.last_action_context,
             prev_narrative=self.last_narrative,
+            memory_snippets=memory_snippets,
+            revisit_memory=revisit_memory,
         )
         self.display.print_loading()
 
@@ -2583,6 +2717,59 @@ class DeadStaticGame:
         if extra_context:
             summary += " " + " ".join(extra_context)
         self.state.history.append(summary)
+
+        # 10b. Episodic memory: record this turn so future turns can retrieve it.
+        if self.memory is not None and Config.RAG_ENABLED:
+            try:
+                outcome_str = " ".join(extra_context) if extra_context else ""
+                # Short narrative head — the first sentence is usually the meat
+                head = (self.last_narrative or "").strip()
+                for sep in ["。", ".", "\n"]:
+                    if sep in head:
+                        head = head.split(sep, 1)[0] + sep
+                        break
+                head = head[:160]
+                # Auto-generated summary for retrieval: action + outcome, in either language
+                zh = Config.LANG == "zh"
+                loc_display = (
+                    LOCATIONS.get(self.state.world.location, {}).get("name_zh", self.state.world.location)
+                    if zh else self.state.world.location
+                )
+                auto_summary = f"{loc_display}: {chosen_action}"
+                if outcome_str:
+                    auto_summary += " — " + outcome_str
+                auto_summary = auto_summary[:200]
+
+                # Phase 1.5: upgrade summary with a quick LLM call when enabled.
+                # Never overwrite the mechanical summary if the LLM call fails —
+                # we keep auto_summary as the robust fallback.
+                if (Config.RAG_LLM_SUMMARY and _rag_summarize_turn is not None
+                        and self.llm is not None and self.last_narrative):
+                    llm_summary = _rag_summarize_turn(
+                        self.llm,
+                        narrative=self.last_narrative,
+                        action=chosen_action,
+                        location=loc_display,
+                        outcome=outcome_str,
+                        lang=Config.LANG,
+                        max_tokens=Config.RAG_LLM_SUMMARY_MAX_TOKENS,
+                    )
+                    if llm_summary:
+                        auto_summary = llm_summary
+
+                self.memory.record(
+                    turn=self.state.turn,
+                    day=self.state.world.day,
+                    time_of_day=self.state.world.time_of_day.value,
+                    location=self.state.world.location,
+                    weather=self.state.world.weather.value,
+                    action=chosen_action,
+                    outcome=outcome_str,
+                    summary=auto_summary,
+                    raw_narrative_head=head,
+                )
+            except Exception:
+                pass  # never let memory failures break a turn
 
         # 10. Advance time
         self.rules.advance_time(self.state.world)

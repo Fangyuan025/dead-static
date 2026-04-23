@@ -34,7 +34,7 @@
 ### 开发者（从源码运行）
 
 ```bash
-pip install rich requests huggingface-hub
+pip install -r requirements.txt
 python game.py
 ```
 
@@ -74,6 +74,23 @@ python game.py
 游戏以后台子进程启动 `llama-server.exe`，通过 OpenAI 兼容的 HTTP API 通信。游戏退出时服务器自动关闭。自动检测 NVIDIA GPU 以启用 CUDA 加速；纯 CPU 模式同样可用。
 
 **模型：** [Josiefied-Qwen3-1.7B-abliterated-v1](https://huggingface.co/Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf)（Q4_0 量化，1.05 GB）
+
+### 剧情记忆（RAG）
+
+1.7B 的小模型上下文窗口有限——没有辅助，跑到第 10 天时它早已忘了第 3 天发生了什么。DEAD STATIC 用一套轻量的 **RAG（检索增强生成）层**解决这个问题：
+
+1. **每回合结束**时，用一次紧凑的 LLM 调用把本回合压成一句话（中文 ≤ 40 字 / 英文 ≤ 20 词）。每回合增加 ~0.2–0.4 秒。
+2. 摘要被分词（中文用 jieba，英文按空白切分）后存入本地 **BM25 索引**（`rag_data/` 目录下）。
+3. **每回合开始**时，用 `(地点 + 天气 + 时段 + 当前行动)` 作为查询语句，从索引中检索 top-3 相关的过往记忆，作为「往事回响」注入 prompt。
+4. **回访检测**：如果玩家回到了去过的地方，会额外注入一条强制指令——*"这不是第一次来这里。上次：[摘要]。开头必须点出'再次'，并呼应上次发生的事。"*——强制模型使用该记忆而不是无视它。
+
+**效果**：10 个回合后回到同一个地点时，叙事会以"你再次回到……"开场，并延续当时的具体细节——找到的抗生素、走廊尽头的咆哮、救过的幸存者。
+
+两个开关位于设置菜单：
+- **剧情记忆 (RAG)** — 检索层本身（默认开启）
+- **LLM 摘要** — 用第二次 LLM 调用生成更精准的摘要（默认开启；觉得额外延迟烦人可以关掉，有机械摘要兜底）
+
+实现：`rag/episodic.py`（~310 行，BM25 + jieba，无重依赖）+ `rag/summarizer.py`（~100 行）。零额外下载。
 
 ### 15 天结构
 
@@ -228,11 +245,17 @@ class Config:
 ## 项目结构
 
 ```
-game.py           主游戏 — 所有系统集成在单个文件中
-build.py          PyInstaller 构建脚本
-package.py        打包 exe + llama-server + GGUF 模型
-installer.iss     Inno Setup Windows 安装程序脚本
-requirements.txt  Python 依赖 (rich, requests, huggingface-hub)
+game.py             主游戏 — 所有系统集成在单个文件中（~2600 行）
+rag/
+  episodic.py       BM25 + jieba 剧情记忆存储
+  summarizer.py     LLM 回合摘要器
+build.py            PyInstaller 构建脚本
+package.py          打包 exe + llama-server + GGUF 模型
+installer.iss       Inno Setup Windows 安装程序脚本
+requirements.txt    Python 依赖
+test_rag.py         RAG 模块的离线单元测试（18 个）
+test_summarizer.py  摘要器在真实 llama-server 上的质量测试
+test_rag_live.py    RAG 端到端脚本化试跑（9 个）
 ```
 
 ---

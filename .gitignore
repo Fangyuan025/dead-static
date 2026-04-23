@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+release/
+DeadStatic.spec
+
+# Runtime / model data (downloaded on first launch)
+runtime/
+models/
+llama_server.log
+
+# Local RAG session data (generated each game)
+rag_data/
+
+# Save file (local to user)
+dead_static_save.json
+
+# OS
+.DS_Store
+Thumbs.db
