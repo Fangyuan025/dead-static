@@ -92,6 +92,22 @@ python game.py
 
 实现：`rag/episodic.py`（~310 行，BM25 + jieba，无重依赖）+ `rag/summarizer.py`（~100 行）。零额外下载。
 
+### 静态场景语料库
+
+只检索玩家做过的事还不够——世界本身也需要一致性。同一间公寓再次进来时应该还是那间公寓，下水道听起来就该像下水道。没有参考的话，小模型倾向于每一场都重新编一个。
+
+DEAD STATIC 内置一份手写的场景语料：**14 个地点 × 2 条 = 28 条地点专属描写**，加上 **12 条天气/时段通用氛围片段**。每一条都可以附带 `weather`（天气）和 `time`（时段）标签。
+
+每回合的检索流程：
+
+1. **硬过滤**当前场景——条目必须地点匹配（或是 `*` 通用氛围），天气在其列表中，时段也在其列表中，才进入候选池。
+2. **排序**：候选池用加权 token 重叠打分，查询语句是 `(地点 + 天气 + 时段 + 事件 + 上回合行动)`。中文虚词（的、了、是……）和单字 CJK token 会被剔除，避免淹没「走廊」「监护仪」这类有信息量的词。
+3. **注入**：top-2 作为「场景参考」段，放在事件行之前，并附上指令：*"可以借鉴其中的意象和词汇，但不要照抄原句。"*
+
+实际效果：在 **医院 / 夜晚**，模型会看到"心电监护仪在响、轮椅自己慢慢转过来"的参考，然后把这些意象编织进去；在 **天台 / 晴 / 夜晚** 看到"银河贴着地平线、远处的门来回拍打"；在 **下水道隧道 / 雨** 看到"脏水齐着小腿、远处水声像呼吸"。世界不再每换一场就重新来过。
+
+可以在设置菜单里切换 **场景参考**（默认开启）。实现：`rag/lore.py`（~180 行）+ `rag/corpus/lore_data.py`（手写内容）。纯静态数据——启动时一次性加载，运行时无磁盘 I/O。
+
 ### 15 天结构
 
 | 天数 | 事件 | 压力等级 |
@@ -245,17 +261,22 @@ class Config:
 ## 项目结构
 
 ```
-game.py             主游戏 — 所有系统集成在单个文件中（~2600 行）
+game.py                主游戏 — 所有系统集成在单个文件中（~2600 行）
 rag/
-  episodic.py       BM25 + jieba 剧情记忆存储
-  summarizer.py     LLM 回合摘要器
-build.py            PyInstaller 构建脚本
-package.py          打包 exe + llama-server + GGUF 模型
-installer.iss       Inno Setup Windows 安装程序脚本
-requirements.txt    Python 依赖
-test_rag.py         RAG 模块的离线单元测试（18 个）
-test_summarizer.py  摘要器在真实 llama-server 上的质量测试
-test_rag_live.py    RAG 端到端脚本化试跑（9 个）
+  episodic.py          BM25 + jieba 剧情记忆存储
+  summarizer.py        LLM 回合摘要器
+  lore.py              静态场景语料检索（标签过滤 + token 重叠）
+  corpus/
+    lore_data.py       手写的地点描写 + 氛围片段
+build.py               PyInstaller 构建脚本
+package.py             打包 exe + llama-server + GGUF 模型
+installer.iss          Inno Setup Windows 安装程序脚本
+requirements.txt       Python 依赖
+test_rag.py            剧情记忆的离线单元测试（18 个）
+test_lore.py           场景语料的离线单元测试（26 个）
+test_summarizer.py     摘要器在真实 llama-server 上的质量测试
+test_rag_live.py       剧情记忆端到端脚本化试跑（9 个）
+test_lore_live.py      场景语料注入端到端试跑（14 个）
 ```
 
 ---

@@ -80,12 +80,13 @@ import requests
 
 # ─── Try to import RAG module (graceful degrade if deps missing) ───
 try:
-    from rag import EpisodicMemory, summarize_turn as _rag_summarize_turn
+    from rag import EpisodicMemory, summarize_turn as _rag_summarize_turn, LoreStore
     HAS_RAG = True
 except Exception:
     HAS_RAG = False
     EpisodicMemory = None  # type: ignore
     _rag_summarize_turn = None  # type: ignore
+    LoreStore = None  # type: ignore
 
 # ─── Try to import Rich for fancy TUI, fallback to plain text ───
 try:
@@ -156,6 +157,13 @@ class Config:
     # Adds ~1-2s per turn; disable if gameplay feels laggy.
     RAG_LLM_SUMMARY = True
     RAG_LLM_SUMMARY_MAX_TOKENS = 60
+
+    # Phase 2: static lore corpus. Hand-authored per-location flavor +
+    # atmosphere fragments retrieved by (location, weather, time) and
+    # injected as "scene reference" so narrative stays tonally consistent.
+    LORE_ENABLED = True
+    LORE_TOP_K = 2             # how many lore lines to inject per turn
+    LORE_INCLUDE_ATMOSPHERE = True  # also pull from generic weather/time fragments
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1180,7 +1188,8 @@ def _get_system_prompt() -> str:
 def build_prompt(state: GameState, event: dict,
                  action_context: str = "", prev_narrative: str = "",
                  memory_snippets: str = "",
-                 revisit_memory: str = "") -> str:
+                 revisit_memory: str = "",
+                 lore_snippets: str = "") -> str:
     """Build prompt with labeled structure for small (1-3B) models.
 
     Labels help the model produce structured output (proper [A][B][C]).
@@ -1252,6 +1261,9 @@ def build_prompt(state: GameState, event: dict,
         if memory_snippets:
             lines.append("往事回响（之前经历过的片段，保持前后一致）:")
             lines.append(memory_snippets)
+        if lore_snippets:
+            lines.append("场景参考（可以借鉴其中的意象和词汇，但不要照抄原句）:")
+            lines.append(lore_snippets)
         lines.append(f"事件: {event['description']}")
         # Strong directive for revisit: same location as a past memory.
         # Small models respond better to an imperative placed close to the generation point.
@@ -1275,6 +1287,9 @@ def build_prompt(state: GameState, event: dict,
         if memory_snippets:
             lines.append("Past echoes (prior events — keep continuity):")
             lines.append(memory_snippets)
+        if lore_snippets:
+            lines.append("Scene reference (borrow imagery and vocabulary — do not copy verbatim):")
+            lines.append(lore_snippets)
         lines.append(f"Event: {event['description']}")
         if revisit_memory:
             lines.append(
@@ -2211,6 +2226,15 @@ class DeadStaticGame:
             except Exception:
                 self.memory = None
 
+        # RAG Phase 2: static lore corpus (per-location flavor + atmosphere).
+        # Loaded once from the corpus module; no disk I/O after init.
+        self.lore = None
+        if HAS_RAG and LoreStore is not None and Config.LORE_ENABLED:
+            try:
+                self.lore = LoreStore()
+            except Exception:
+                self.lore = None
+
     def initialize_llm(self):
         """Initialize the LLM: download runtime + model if needed, start server."""
         console = self.display.console if HAS_RICH else None
@@ -2320,10 +2344,11 @@ class DeadStaticGame:
             if HAS_RAG:
                 rag_status = "ON" if Config.RAG_ENABLED else "OFF"
                 sum_status = "ON" if Config.RAG_LLM_SUMMARY else "OFF"
+                lore_status = "ON" if Config.LORE_ENABLED else "OFF"
                 if Config.LANG == "zh":
-                    rag_label = f"  剧情记忆 (RAG): {rag_status}  |  LLM 摘要: {sum_status}"
+                    rag_label = f"  剧情记忆 (RAG): {rag_status}  |  LLM 摘要: {sum_status}  |  场景参考: {lore_status}"
                 else:
-                    rag_label = f"  Story memory (RAG): {rag_status}  |  LLM summary: {sum_status}"
+                    rag_label = f"  Story memory (RAG): {rag_status}  |  LLM summary: {sum_status}  |  Scene lore: {lore_status}"
                 print(f"\n{rag_label}")
 
             print(f"\n  {t('[1] Run diagnostics')}")
@@ -2333,9 +2358,11 @@ class DeadStaticGame:
                 if Config.LANG == "zh":
                     print(f"  [4] 切换剧情记忆 (RAG)")
                     print(f"  [5] 切换 LLM 摘要（慢但更准）")
+                    print(f"  [6] 切换场景参考（静态地点描述）")
                 else:
                     print(f"  [4] Toggle story memory (RAG)")
                     print(f"  [5] Toggle LLM summary (slower but sharper)")
+                    print(f"  [6] Toggle scene lore (static location flavor)")
             print(f"  {t('[B] Back')}")
 
             choice = self.display.get_input(t("Choose: ")).strip()
@@ -2362,6 +2389,12 @@ class DeadStaticGame:
                 Config.RAG_LLM_SUMMARY = not Config.RAG_LLM_SUMMARY
                 state = "ON" if Config.RAG_LLM_SUMMARY else "OFF"
                 msg = f"LLM 摘要已{'开启' if Config.RAG_LLM_SUMMARY else '关闭'}" if Config.LANG == "zh" else f"LLM summary: {state}"
+                self.display.print_system_message(msg)
+                time.sleep(0.5)
+            elif choice == '6' and HAS_RAG:
+                Config.LORE_ENABLED = not Config.LORE_ENABLED
+                state = "ON" if Config.LORE_ENABLED else "OFF"
+                msg = f"场景参考已{'开启' if Config.LORE_ENABLED else '关闭'}" if Config.LANG == "zh" else f"Scene lore: {state}"
                 self.display.print_system_message(msg)
                 time.sleep(0.5)
             elif choice.upper() == 'B':
@@ -2536,12 +2569,35 @@ class DeadStaticGame:
                 memory_snippets = ""
                 revisit_memory = ""
 
+        # RAG Phase 2: retrieve static lore for this location / weather / time.
+        # Separate from episodic — runs every turn (no warm-up), location-filtered,
+        # injected as "scene reference" so the model borrows consistent imagery.
+        lore_snippets = ""
+        if self.lore is not None and Config.LORE_ENABLED:
+            try:
+                lore_hits = self.lore.query(
+                    location=self.state.world.location,
+                    weather=self.state.world.weather.value,
+                    time_of_day=self.state.world.time_of_day.value,
+                    query_text=" ".join([
+                        event.get("title", ""),
+                        event.get("description", ""),
+                        self.last_action_context,
+                    ]),
+                    k=Config.LORE_TOP_K,
+                    include_atmosphere=Config.LORE_INCLUDE_ATMOSPHERE,
+                )
+                lore_snippets = self.lore.format_for_prompt(lore_hits, lang=Config.LANG)
+            except Exception:
+                lore_snippets = ""
+
         prompt = build_prompt(
             self.state, event,
             action_context=self.last_action_context,
             prev_narrative=self.last_narrative,
             memory_snippets=memory_snippets,
             revisit_memory=revisit_memory,
+            lore_snippets=lore_snippets,
         )
         self.display.print_loading()
 

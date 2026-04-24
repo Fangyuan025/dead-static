@@ -92,6 +92,22 @@ Both toggles live in the settings menu:
 
 Implementation: `rag/episodic.py` (~310 lines, BM25 + jieba, no heavy deps) and `rag/summarizer.py` (~100 lines). Zero additional downloads.
 
+### Static Lore Corpus
+
+Retrieval of past turns only solves half the problem. The other half is **consistency in the world itself** — the apartment should feel like the same apartment across visits, the sewer tunnels should sound like sewer tunnels. A small model left on its own tends to reinvent every scene.
+
+DEAD STATIC ships a hand-authored lore corpus: 28 per-location flavor entries (14 locations × 2) plus 12 weather/time atmosphere fragments. Every entry carries optional `weather` and `time` tags.
+
+On every turn the game:
+
+1. **Hard-filters** by the current scene — an entry is a candidate only if its location matches (or is a `*` atmosphere wildcard), its weather list matches, and its time list matches.
+2. **Ranks** survivors by weighted token-overlap against the current `(location + weather + time + event + last action)`. Stopwords and single-character CJK particles are stripped so signal terms (走廊, monitor, banner) dominate.
+3. **Injects** top-2 as a `Scene reference` section placed right before the event line, with a directive: *"borrow imagery and vocabulary — do not copy verbatim."*
+
+Concrete effect: on **Hospital / Night**, the model sees lore about "a cardiac monitor beeping, a wheelchair turning of its own accord" and weaves that imagery in; on **Rooftop / Clear / Night**, it sees "the Milky Way along the horizon, a door slamming far away"; on **Sewer Tunnels / Rain**, "water rising to mid-calf, breathing-like rhythms in a distant pipe." The world stops amnesia-resetting on every scene change.
+
+Toggle **Scene lore** in the settings menu (on by default). Implementation: `rag/lore.py` (~180 lines) + `rag/corpus/lore_data.py` (the hand-authored content). Static data — loaded once at startup, no disk I/O during play.
+
 ### The 15-Day Structure
 
 | Day | Event | Pressure |
@@ -243,17 +259,22 @@ Edit `SYSTEM_PROMPT`. The game mechanics stay the same regardless of narrative s
 ## Project Structure
 
 ```
-game.py             Main game — all systems in a single file (~2600 lines)
+game.py                Main game — all systems in a single file (~2600 lines)
 rag/
-  episodic.py       BM25 + jieba episodic memory store
-  summarizer.py     LLM turn-summarizer
-build.py            PyInstaller build script
-package.py          Bundles exe + llama-server + GGUF model
-installer.iss       Inno Setup script for Windows installer
-requirements.txt    Python dependencies
-test_rag.py         Headless unit tests for the RAG module (18 cases)
-test_summarizer.py  Summarizer-quality tests against live llama-server
-test_rag_live.py    End-to-end RAG scripted playthrough (9 cases)
+  episodic.py          BM25 + jieba episodic memory store
+  summarizer.py        LLM turn-summarizer
+  lore.py              Static lore retrieval (tag-filtered token overlap)
+  corpus/
+    lore_data.py       Hand-authored per-location flavor + atmosphere
+build.py               PyInstaller build script
+package.py             Bundles exe + llama-server + GGUF model
+installer.iss          Inno Setup script for Windows installer
+requirements.txt       Python dependencies
+test_rag.py            Headless unit tests for episodic RAG (18 cases)
+test_lore.py           Headless unit tests for the lore corpus (26 cases)
+test_summarizer.py     Summarizer-quality tests against live llama-server
+test_rag_live.py       End-to-end episodic RAG scripted playthrough (9 cases)
+test_lore_live.py      End-to-end lore injection playthrough (14 cases)
 ```
 
 ---
