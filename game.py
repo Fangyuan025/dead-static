@@ -1204,21 +1204,86 @@ def build_prompt(state: GameState, event: dict,
     loc_desc = loc.get("desc_zh", loc.get("description", "")) if zh else loc.get("description", "")
     weapon_str = _item_name(p.equipped_weapon) if p.equipped_weapon else t("bare hands")
 
-    # Status alerts (only noteworthy conditions)
-    alerts = []
+    # ── Player state: graded (not binary) so the model can gauge severity.
+    # Small models ignore status tags like "badly wounded" — they need the
+    # actual number AND a severity label AND a body-directive.
+    state_parts = []
     if zh:
-        if p.health < 30: alerts.append("重伤")
-        if p.hunger < 20: alerts.append("饥饿")
-        if p.thirst < 20: alerts.append("脱水")
-        if p.infection > 0: alerts.append(f"感染{p.infection}%")
-        if p.morale < 20: alerts.append("崩溃边缘")
+        if p.health < 100:
+            sev = "重伤" if p.health < 30 else ("受伤" if p.health < 70 else "")
+            state_parts.append(f"HP {p.health}/100" + (f"（{sev}）" if sev else ""))
+        if p.hunger < 100:
+            sev = "严重饥饿" if p.hunger < 20 else ("饥饿" if p.hunger < 50 else "")
+            state_parts.append(f"饱食 {p.hunger}/100" + (f"（{sev}）" if sev else ""))
+        if p.thirst < 100:
+            sev = "脱水" if p.thirst < 20 else ("口渴" if p.thirst < 50 else "")
+            state_parts.append(f"水分 {p.thirst}/100" + (f"（{sev}）" if sev else ""))
+        if p.stamina < 60:
+            sev = "精疲力竭" if p.stamina < 20 else "疲惫"
+            state_parts.append(f"体力 {p.stamina}/100（{sev}）")
+        if p.infection > 0:
+            sev = "感染恶化" if p.infection >= 40 else "感染中"
+            state_parts.append(f"感染 {p.infection}%（{sev}）")
+        if p.morale < 40:
+            sev = "崩溃边缘" if p.morale < 20 else "士气低迷"
+            state_parts.append(f"士气 {p.morale}/100（{sev}）")
     else:
-        if p.health < 30: alerts.append("badly wounded")
-        if p.hunger < 20: alerts.append("starving")
-        if p.thirst < 20: alerts.append("dehydrated")
-        if p.infection > 0: alerts.append(f"infected {p.infection}%")
-        if p.morale < 20: alerts.append("breaking down")
-    alert_str = ", ".join(alerts)
+        if p.health < 100:
+            sev = "badly wounded" if p.health < 30 else ("wounded" if p.health < 70 else "")
+            state_parts.append(f"HP {p.health}/100" + (f" ({sev})" if sev else ""))
+        if p.hunger < 100:
+            sev = "starving" if p.hunger < 20 else ("hungry" if p.hunger < 50 else "")
+            state_parts.append(f"food {p.hunger}/100" + (f" ({sev})" if sev else ""))
+        if p.thirst < 100:
+            sev = "dehydrated" if p.thirst < 20 else ("thirsty" if p.thirst < 50 else "")
+            state_parts.append(f"water {p.thirst}/100" + (f" ({sev})" if sev else ""))
+        if p.stamina < 60:
+            sev = "exhausted" if p.stamina < 20 else "tired"
+            state_parts.append(f"stamina {p.stamina}/100 ({sev})")
+        if p.infection > 0:
+            sev = "infection worsening" if p.infection >= 40 else "infected"
+            state_parts.append(f"infection {p.infection}% ({sev})")
+        if p.morale < 40:
+            sev = "breaking down" if p.morale < 20 else "low morale"
+            state_parts.append(f"morale {p.morale}/100 ({sev})")
+    state_str = " | ".join(state_parts)
+
+    # ── Inventory always visible so the model knows what the player carries.
+    # This is the single biggest lever: without it the model never has the
+    # player eat food they're holding, use antibiotics for infection, etc.
+    inv_str = ""
+    if p.inventory:
+        inv_names = [_item_name(k) for k in p.inventory]
+        # dedupe-with-count if duplicates exist
+        from collections import Counter
+        counts = Counter(inv_names)
+        parts = [(n if c == 1 else f"{n}×{c}") for n, c in counts.items()]
+        sep = "、" if zh else ", "
+        if zh:
+            inv_str = f"背包({len(p.inventory)}/{p.max_inventory}): {sep.join(parts)}"
+        else:
+            inv_str = f"Pack ({len(p.inventory)}/{p.max_inventory}): {sep.join(parts)}"
+
+    # ── Available relief hints — let the model connect bad state ↔ carried items.
+    relief_hints = []
+    has_food = any(ITEMS.get(k, {}).get("type") == "food" for k in p.inventory)
+    has_water = any(ITEMS.get(k, {}).get("type") == "water" for k in p.inventory)
+    has_medical = any(ITEMS.get(k, {}).get("type") == "medical" for k in p.inventory)
+    has_antiinfect = any(k in ("antibiotics", "experimental antiviral") for k in p.inventory)
+    if zh:
+        if p.hunger < 40 and has_food:       relief_hints.append("背包里有食物")
+        if p.thirst < 40 and has_water:      relief_hints.append("背包里有水")
+        if p.health < 50 and has_medical:    relief_hints.append("背包里有医疗用品")
+        if p.infection >= 25 and has_antiinfect: relief_hints.append("背包里有抗感染药")
+    else:
+        if p.hunger < 40 and has_food:       relief_hints.append("food in pack")
+        if p.thirst < 40 and has_water:      relief_hints.append("water in pack")
+        if p.health < 50 and has_medical:    relief_hints.append("medical supplies in pack")
+        if p.infection >= 25 and has_antiinfect: relief_hints.append("anti-infection meds in pack")
+
+    # ── Decide whether to emit the "body-directive" instruction line.
+    compromised = (p.health < 70 or p.hunger < 40 or p.thirst < 40
+                   or p.stamina < 30 or p.infection >= 20 or p.morale < 30)
 
     loc_name = _loc_name(w.location)
 
@@ -1253,8 +1318,12 @@ def build_prompt(state: GameState, event: dict,
     if zh:
         if action_context:
             lines.append(f"玩家行动: {action_context}")
-        if alert_str:
-            lines.append(f"玩家状态: {alert_str}")
+        if state_str:
+            lines.append(f"玩家状态: {state_str}")
+        if inv_str:
+            lines.append(inv_str)
+        if relief_hints:
+            lines.append(f"可用资源: {'，'.join(relief_hints)}（玩家可能选择使用）")
         lines.append(f"场景: {loc_name}——{loc_desc}")
         lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
         lines.append(f"细节: {detail}。")
@@ -1274,13 +1343,25 @@ def build_prompt(state: GameState, event: dict,
             )
         if is_story:
             lines.append("重要：这是关键剧情事件，你必须围绕这个事件展开叙述。")
+        # Body-directive: force the narrative to physically reflect current state.
+        # Without this, small models write the scene as if the player were fine.
+        if compromised:
+            lines.append(
+                "重要：叙述必须体现玩家当前的身体/精神状态——根据「玩家状态」里的标签，"
+                "让动作带上相应的吃力、颤抖、呼吸粗重、伤口灼痛、视线模糊、脚步发软、"
+                "或心理动摇等具体反应。不能写成健康状态。"
+            )
         if action_context:
             lines.append("先描述玩家行动的结果，再描述事件。")
     else:
         if action_context:
             lines.append(f"Player action: {action_context}")
-        if alert_str:
-            lines.append(f"Player status: {alert_str}")
+        if state_str:
+            lines.append(f"Player status: {state_str}")
+        if inv_str:
+            lines.append(inv_str)
+        if relief_hints:
+            lines.append(f"Available resources: {', '.join(relief_hints)} (the player may choose to use them)")
         lines.append(f"Scene: {w.location} — {loc_desc}")
         lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
         lines.append(f"Detail: {detail}.")
@@ -1298,6 +1379,13 @@ def build_prompt(state: GameState, event: dict,
             )
         if is_story:
             lines.append("IMPORTANT: This is a key story event. Your narrative MUST focus on this event.")
+        if compromised:
+            lines.append(
+                "IMPORTANT: The narrative MUST physically reflect the player's current state — "
+                "use labored movements, shaking, heavy breathing, burning wounds, blurred vision, "
+                "weak legs, or mental fraying depending on the Player status tags. "
+                "Do NOT write the scene as if the player were healthy."
+            )
         if action_context:
             lines.append("Start by describing what happened when the player did this.")
 
