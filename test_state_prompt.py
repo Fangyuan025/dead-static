@@ -182,6 +182,52 @@ def test_compromised_triggers_body_directive():
            "叙述必须体现玩家当前的身体" in prompt, prompt[:200])
 
 
+def test_action_primacy_directive():
+    """When an action_context is given, the prompt must carry the
+    action-primacy directive that forbids the model from reversing
+    the player's choice or opening with the event."""
+    g.Config.LANG = "zh"
+    s = fresh_state()
+    prompt = g.build_prompt(s, EVENT, action_context="冲上去砍丧尸")
+    ok("zh: prompt has '玩家行动' line with action",
+       "玩家行动: 冲上去砍丧尸" in prompt, prompt[:300])
+    ok("zh: action directive present (first sentence = action body result)",
+       "第一句话必须是" in prompt and "具体身体/感官结果" in prompt,
+       prompt[-400:])
+    ok("zh: directive forbids reversing the action",
+       "绝对不要让玩家中途改主意" in prompt, prompt[-400:])
+    ok("zh: directive enforces second-person '你'",
+       "只用「你」称呼玩家" in prompt, prompt[-400:])
+
+
+def test_action_directive_absent_when_no_action():
+    """With no action_context, no action-primacy directive fires."""
+    g.Config.LANG = "zh"
+    s = fresh_state()
+    prompt = g.build_prompt(s, EVENT, action_context="")
+    ok("no action → no '玩家行动' line", "玩家行动:" not in prompt)
+    ok("no action → no first-sentence directive",
+       "第一句话必须是" not in prompt)
+
+
+def test_english_action_directive():
+    """English path carries the same primacy directive."""
+    g.Config.LANG = "en"
+    try:
+        s = fresh_state()
+        prompt = g.build_prompt(s, EVENT, action_context="charge the zombie")
+        ok("en: 'Player action:' line with action",
+           "Player action: charge the zombie" in prompt)
+        ok("en: first-sentence directive present",
+           "first sentence MUST be the concrete physical/sensory" in prompt)
+        ok("en: forbids reversing",
+           "Do NOT have" in prompt and "abandon the action" in prompt)
+        ok("en: enforces 'you'",
+           "Use 'you', never 'the player'" in prompt)
+    finally:
+        g.Config.LANG = "zh"
+
+
 def test_english_output_parity():
     """English path emits the same structure with English labels."""
     g.Config.LANG = "en"
@@ -212,6 +258,9 @@ def main():
     test_relief_hint_antibiotics()
     test_no_relief_when_thresholds_not_met()
     test_compromised_triggers_body_directive()
+    test_action_primacy_directive()
+    test_action_directive_absent_when_no_action()
+    test_english_action_directive()
     test_english_output_parity()
     print(f"\n── Results: {PASS} passed, {FAIL} failed ──")
     sys.exit(0 if FAIL == 0 else 1)

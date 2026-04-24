@@ -1152,29 +1152,33 @@ class RulesEngine:
 # LLM INTERFACE
 # ══════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT_EN = """You narrate a zombie text adventure. Second person, present tense. Be concise.
+SYSTEM_PROMPT_EN = """You narrate a zombie text adventure. Second person ("you"). Present tense. Be concise.
 
 RULES:
-1. The EVENT is the most important part. Your narrative MUST describe what the event says.
-2. If a player action is given, describe the result FIRST, then the event.
-3. Describe concrete things the player sees, hears, or can interact with.
-4. Do NOT assume the player picks up, grabs, or uses anything. Choices should be actions like "search", "move to", "hide", "talk to", not "pick up X".
-5. Choices must be realistic actions a person could actually do in the scene.
-6. Write 50-100 words, then end with exactly 3 choices:
+1. If a player ACTION is given, it is the PRIMARY subject of the narrative. Your opening sentence must be the concrete physical/sensory result of THAT action — what the player's body, hands, or senses do as they carry it out.
+2. NEVER contradict, reverse, or abandon the player's action. If they chose to attack, they attack — do not have them hide instead. If they chose to search, they search — do not have them run away. The EVENT is the backdrop the action happens against, not a reason to override the choice.
+3. The event is how the world reacts DURING or AFTER the action — it complicates the action, it does not replace it.
+4. Use "you", never "the player" or a name. Stay in second person the entire time.
+5. Describe concrete things the player sees, hears, or touches — specific objects, sounds, textures — not vague atmosphere.
+6. Do NOT assume the player picks up, grabs, or uses anything not named in the action. Choices should be actions like "search", "move to", "hide", "talk to", not "pick up X".
+7. Choices must be realistic actions a person could actually do in the scene.
+8. Write 50-100 words of narrative, then end with exactly 3 choices in this format:
 
 [A] action
 [B] action
 [C] action"""
 
-SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称，现在时。简洁有力。必须用中文。
+SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称（"你"）。现在时。简洁有力。必须用中文。
 
 规则：
-1. 事件是最重要的部分。你的叙述必须描写事件中发生的事。
-2. 如果给了玩家行动，先描述行动结果，再描述事件。
-3. 描写玩家看到、听到、能互动的具体事物。
-4. 不要假设玩家拿起或使用任何东西。选项应该是"搜索""前往""躲藏""交谈"等动作，不要写"拿起X"。
-5. 选项必须是场景中一个人真的能做的合理行动。
-6. 写50-100字叙事，然后给恰好3个选项：
+1. 如果给了玩家行动，它就是叙事的主角。开头第一句必须写这个行动的具体身体/感官结果——玩家的手、脚、眼睛、呼吸正在如何执行这个动作。
+2. 绝对不要违背、反转、或中途放弃玩家的行动。玩家选择进攻，就让他进攻，不要改写成躲藏；玩家选择搜索，就让他搜索，不要改写成逃跑。事件是行动发生的背景，不是用来覆盖玩家选择的。
+3. 事件是世界对这个行动的反应——它可以让行动更复杂、更危险，但不能取代行动本身。
+4. 用"你"称呼玩家，绝对不要用"玩家"或名字。全程保持第二人称。
+5. 描写玩家看到、听到、摸到的具体事物——具体的物件、声响、质感——不要空泛的气氛描写。
+6. 不要假设玩家拿起或使用行动中没提到的东西。选项应该是"搜索""前往""躲藏""交谈"等动作，不要写"拿起X"。
+7. 选项必须是场景中一个人真的能做的合理行动。
+8. 写50-100字叙事，然后给恰好3个选项，格式如下：
 
 [A] 行动
 [B] 行动
@@ -1352,7 +1356,12 @@ def build_prompt(state: GameState, event: dict,
                 "或心理动摇等具体反应。不能写成健康状态。"
             )
         if action_context:
-            lines.append("先描述玩家行动的结果，再描述事件。")
+            lines.append(
+                "重要：第一句话必须是「玩家行动」的具体身体/感官结果——写玩家的手、"
+                "脚、眼睛、呼吸正在怎样执行这个动作。只用「你」称呼玩家，不要用「玩家」或名字。"
+                "绝对不要让玩家中途改主意去做别的事，也不要用事件覆盖这个动作。"
+                "事件只是在动作进行中或完成后才介入的背景变化。"
+            )
     else:
         if action_context:
             lines.append(f"Player action: {action_context}")
@@ -1387,7 +1396,14 @@ def build_prompt(state: GameState, event: dict,
                 "Do NOT write the scene as if the player were healthy."
             )
         if action_context:
-            lines.append("Start by describing what happened when the player did this.")
+            lines.append(
+                "IMPORTANT: The first sentence MUST be the concrete physical/sensory "
+                "result of the Player action — what your hands, feet, eyes, or breath "
+                "do as you carry it out. Use 'you', never 'the player'. Do NOT have "
+                "the player change their mind or abandon the action, and do NOT let "
+                "the event replace the action. The event only complicates the action "
+                "while or after it happens."
+            )
 
     return "\n".join(lines)
 
