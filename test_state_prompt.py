@@ -66,7 +66,7 @@ def test_healthy_state_minimal():
     prompt = g.build_prompt(s, EVENT, action_context="搜索")
     ok("healthy: no '你的状态' line", "你的状态" not in prompt, prompt)
     ok("healthy: no body directive",
-       "叙述必须体现你当前的身体" not in prompt)
+       "身体反应符合" not in prompt)
     ok("healthy: no '可用资源' line", "可用资源" not in prompt)
 
 
@@ -79,7 +79,7 @@ def test_graded_injury_numbers():
     ok("HP=15 prompt contains HP number", "HP 15/100" in prompt, prompt)
     ok("HP=15 prompt contains '重伤' label", "重伤" in prompt, prompt)
     ok("HP=15 triggers body directive",
-       "叙述必须体现你当前的身体" in prompt)
+       "身体反应符合" in prompt)
 
 
 def test_grading_thresholds():
@@ -179,7 +179,7 @@ def test_compromised_triggers_body_directive():
         s = fresh_state(); mutate(s)
         prompt = g.build_prompt(s, EVENT)
         ok(f"body directive fires for {label}",
-           "叙述必须体现你当前的身体" in prompt, prompt[:200])
+           "身体反应符合" in prompt, prompt[:200])
 
 
 def test_action_primacy_directive():
@@ -191,13 +191,13 @@ def test_action_primacy_directive():
     prompt = g.build_prompt(s, EVENT, action_context="冲上去砍丧尸")
     ok("zh: prompt has '你的行动' line with action",
        "你的行动: 冲上去砍丧尸" in prompt, prompt[:300])
-    ok("zh: action directive present (first sentence = action body result)",
-       "第一句话必须是" in prompt and "具体身体/感官结果" in prompt,
+    ok("zh: action directive present (first sentence = action body)",
+       "第一句必须写" in prompt and "「你的行动」" in prompt,
        prompt[-400:])
     ok("zh: directive forbids reversing the action",
-       "绝对不要中途改主意" in prompt, prompt[-400:])
+       "不要中途换动作" in prompt, prompt[-400:])
     ok("zh: pronoun lock enforces second-person '你' (universal directive)",
-       "整段叙述只能用「你」称呼玩家" in prompt, prompt[-400:])
+       "叙述里只用「你」" in prompt, prompt[-400:])
 
 
 def test_outcome_hint_emits_distinct_line():
@@ -220,7 +220,7 @@ def test_outcome_hint_emits_distinct_line():
     # Outcome should also appear inside the directive (for emphasis)
     ok("zh: directive inlines the outcome text",
        "你干净利落地解决了它" in prompt
-       and "上一回合的结果就是这句" in prompt,
+       and "上一回合的结果" in prompt,
        prompt[-500:])
 
 
@@ -233,9 +233,9 @@ def test_outcome_hint_absent_falls_back():
     ok("no outcome → no '上一行动的结果' line",
        "上一行动的结果:" not in prompt)
     ok("no outcome → fallback directive (action body result)",
-       "第一句话必须是" in prompt)
+       "第一句必须写" in prompt)
     ok("no outcome → no outcome-specific directive",
-       "上一回合的结果就是这句" not in prompt)
+       "上一回合的结果" not in prompt)
 
 
 def test_english_outcome_hint():
@@ -250,7 +250,7 @@ def test_english_outcome_hint():
         ok("en: 'Outcome of that action' line present",
            "Outcome of that action: You dispatched it efficiently" in prompt)
         ok("en: directive inlines outcome",
-           "Last turn's outcome was:" in prompt
+           "Rewrite the outcome" in prompt
            and "The body drops at your feet" in prompt)
     finally:
         g.Config.LANG = "zh"
@@ -275,12 +275,14 @@ def test_english_action_directive():
         ok("en: 'Your action:' line with action",
            "Your action: charge the zombie" in prompt)
         ok("en: first-sentence directive present",
-           "first sentence MUST be the concrete physical/sensory" in prompt)
+           "first sentence must show 'Your action' executing" in prompt)
         ok("en: forbids reversing",
-           "Do NOT change your mind" in prompt
-           and "abandon the action" in prompt)
+           "Don't change actions mid-narrative" in prompt
+           and "don't let" in prompt
+           and "replace the action" in prompt)
         ok("en: pronoun lock enforces 'you' (universal directive)",
-           "say 'you', never 'the player'" in prompt)
+           "Voice: write in second person" in prompt
+           or "say 'you'" in prompt)
     finally:
         g.Config.LANG = "zh"
 
@@ -300,7 +302,7 @@ def test_english_output_parity():
         ok("en: 'Pack (' inventory line", "Pack (" in prompt)
         ok("en: relief 'food in pack' hint", "food in pack" in prompt)
         ok("en: body directive triggered",
-           "narrative MUST physically reflect" in prompt)
+           "Body reactions must match" in prompt)
     finally:
         g.Config.LANG = "zh"
 
@@ -335,22 +337,23 @@ def test_pronoun_lock_directive():
     s = fresh_state()
     prompt = g.build_prompt(s, EVENT, action_context="搜索")
     ok("zh: pronoun-lock directive present",
-       "整段叙述只能用「你」称呼玩家" in prompt
-       and "绝对不准出现「玩家」二字" in prompt,
+       "叙述里只用「你」" in prompt
+       and "禁止出现「玩家」" in prompt,
        prompt[-500:])
     ok("zh: don't-pick-for-player ban present",
-       "不要替玩家做下一个决定" in prompt
-       and "不要在叙述里替玩家选下一个动作" in prompt,
+       "不要替「你」做下一个动作" in prompt
+       and "你必须做出选择" in prompt,
        prompt[-500:])
     g.Config.LANG = "en"
     try:
         prompt_en = g.build_prompt(s, EVENT, action_context="search")
         ok("en: pronoun-lock present",
-           "say 'you', never 'the player'" in prompt_en,
+           ("say 'you', never 'the player'" in prompt_en)
+           or ("Voice: write in second person" in prompt_en),
            prompt_en[-500:])
         ok("en: don't-pick-for-player present",
-           "Do NOT decide the player's next action" in prompt_en
-           and "STOP" in prompt_en,
+           ("Do NOT decide the player's next action" in prompt_en
+            or "Don't decide" in prompt_en),
            prompt_en[-500:])
     finally:
         g.Config.LANG = "zh"
@@ -366,7 +369,7 @@ def test_anti_verbatim_outcome_clause():
         outcome_hint="你干净利落地解决了它，尸体瘫倒在你脚边。",
     )
     ok("zh: outcome directive forbids verbatim copy",
-       "绝对不要照抄结果原句" in prompt or "不要照抄结果" in prompt,
+       "不要原样照抄" in prompt or "不要照抄" in prompt,
        prompt[-600:])
     g.Config.LANG = "en"
     try:
@@ -376,7 +379,7 @@ def test_anti_verbatim_outcome_clause():
             outcome_hint="You dispatched it efficiently.",
         )
         ok("en: outcome directive forbids verbatim copy",
-           "DO NOT copy the outcome sentence verbatim" in prompt_en,
+           "Do NOT copy it" in prompt_en or "verbatim" in prompt_en,
            prompt_en[-600:])
     finally:
         g.Config.LANG = "zh"
@@ -459,8 +462,9 @@ def test_anti_fabrication_rule_in_system_prompt():
        "不要凭空捏造" in sp_zh, sp_zh[:300])
     ok("zh system prompt forbids fake injuries",
        "不存在的伤" in sp_zh)
-    ok("zh system prompt locks scene to 「场景」",
-       "「场景」" in sp_zh and "不要把场景换成别处" in sp_zh)
+    ok("zh system prompt locks scene (no foreign location/weather/time)",
+       "当前场景之外的地点" in sp_zh or "不要把场景换成别处" in sp_zh,
+       sp_zh[:600])
     g.Config.LANG = "en"
     try:
         sp_en = g._get_system_prompt()

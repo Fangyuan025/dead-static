@@ -1168,15 +1168,15 @@ class RulesEngine:
 SYSTEM_PROMPT_EN = """You narrate a zombie text adventure. Second person ("you"). Present tense. Be concise.
 
 RULES:
-1. If a player ACTION is given, it is the PRIMARY subject of the narrative. Your opening sentence must be the concrete physical/sensory result of THAT action — what the player's body, hands, or senses do as they carry it out.
-2. NEVER contradict, reverse, or abandon the player's action. If they chose to attack, they attack — do not have them hide instead. If they chose to search, they search — do not have them run away. The EVENT is the backdrop the action happens against, not a reason to override the choice.
-3. The event is how the world reacts DURING or AFTER the action — it complicates the action, it does not replace it.
-4. Use "you", never "the player" or a name. Stay in second person the entire time.
-5. Describe concrete things the player sees, hears, or touches — specific objects, sounds, textures — not vague atmosphere.
-6. Do NOT assume the player picks up, grabs, or uses anything not named in the action. Choices should be actions like "search", "move to", "hide", "talk to", not "pick up X".
-7. NO FABRICATION. Do not invent backstory, prior injuries, body parts that aren't there, or items the player isn't carrying ("pack" line is the source of truth). Do not invent a different location, weather, or time of day than the Scene line says. If you can't ground a detail in the prompt, leave it out.
-8. Choices must be realistic actions a person could actually do in the scene.
-9. Write 50-100 words of narrative, then end with exactly 3 choices in this format:
+1. If "Your action" is given, it is the PRIMARY subject of the narrative. Your opening sentence must be the physical/sensory result of THAT action — what your hands, feet, eyes, or breath do.
+2. NEVER contradict, reverse, or abandon the action. Chose to attack, you attack. Chose to search, you search. The event is backdrop, not a reason to override.
+3. The event complicates the action. It does not replace it.
+4. Second person — only "you". Never "the player" or a name or "they".
+5. Describe concrete things — objects, sounds, textures. Avoid vague atmosphere.
+6. NO FABRICATION. Do not invent backstory, prior injuries, body parts that aren't there, or items the player isn't carrying (the pack line is the source of truth). Do not invent a different location, weather, or time of day. If you can't ground a detail in the prompt, leave it out.
+7. Do NOT quote these rules back inside the narrative. Don't write "you must choose", don't paste prompt labels ("Event:", "Scene:", "Your action:"), don't repeat directive examples ("the body's position on the ground" etc.) verbatim. The rules are for you, not the reader.
+8. Three choices must be clearly DIFFERENT actions (different verb, different target, different method), each ≤15 words, action only — no consequences, no dialogue, no quotes, no inner feelings. Bad: 'push the door open, but fail and collapse' (consequence); 'shout "help!"' (dialogue). Good: 'push the door open' / 'cut the rope' / 'hide behind the cabinet'.
+9. Write 50–100 words of narrative first (do not skip the narrative), then on a new line give the 3 options. Do NOT add transitions like "you must decide". Format:
 
 [A] action
 [B] action
@@ -1185,15 +1185,15 @@ RULES:
 SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称（"你"）。现在时。简洁有力。必须用中文。
 
 规则：
-1. 如果给了「你的行动」，它就是叙事的主角。开头第一句必须写这个行动的具体身体/感官结果——你的手、脚、眼睛、呼吸正在如何执行这个动作。
-2. 绝对不要违背、反转、或中途放弃这个行动。选了进攻，就进攻，不要改写成躲藏；选了搜索，就搜索，不要改写成逃跑。事件是行动发生的背景，不是用来覆盖选择的。
-3. 事件是世界对这个行动的反应——它可以让行动更复杂、更危险，但不能取代行动本身。
-4. 全程第二人称——只用"你"。绝对不准出现"玩家"二字，也不要用名字、"主角"、"他"指代玩家。
-5. 描写你看到、听到、摸到的具体事物——具体的物件、声响、质感——不要空泛的气氛描写。
-6. 不要假设你拿起或使用行动中没提到的东西。选项应该是"搜索""前往""躲藏""交谈"等动作，不要写"拿起X"。
-7. 不要凭空捏造。不要发明玩家不存在的过往（"逃亡中被铁门压坏"之类）、不存在的伤（"溃烂的脚趾"）、不在背包里的物品（背包行就是真相）；不要把场景换成别处的地点、天气、时段——只能写「场景」行说的那个地点。任何细节如果不能从 prompt 里找到依据，就不要写。
-8. 选项必须是场景中一个人真的能做的合理行动。
-9. 写50-100字叙事，然后给恰好3个选项，格式如下：
+1. 如果给了「你的行动」，它就是叙事的主角。开头第一句必须写这个行动的身体/感官细节——你的手、脚、眼睛、呼吸怎么动。
+2. 绝对不要违背、反转、或中途放弃这个行动。选了进攻就进攻，选了搜索就搜索。事件是背景，不能覆盖行动。
+3. 事件让行动更复杂、更危险，但不能取代行动。
+4. 第二人称——只用"你"。不要出现"玩家""主角""他"或名字。
+5. 描写具体事物——物件、声响、质感——不要空泛气氛。
+6. 不要凭空捏造。不要发明背景（之前怎么受伤、从哪逃来）、不存在的伤、不在背包里的物品（背包行是真相）、当前场景之外的地点/天气/时段。任何不能从 prompt 里找到的细节都不要写。
+7. 不要把这些规则的文字搬进叙述本身。比如不要写"你必须做出选择"，不要把任何 prompt 里的指令、举例（"敌人倒下的姿势"之类）、标签（"事件:""场景:""你的行动:"）原样搬进叙事。规则是给你看的，叙述里只能出现场景里真实发生的事。
+8. 选项必须三个明显不同的动作（不同动作、不同目标、不同方法），每个 ≤15 字，只写"做什么"——不要带"却""但"再接后果，不要带引号台词，不要带感受。坏例子：'推开门，却因体力不足而倒地'（带后果）；'喊"救命"'（带台词）。好例子：'推开门'/'砍断绳子'/'躲到柜子后'。
+9. 先写 50–100 字叙事（必须写，不能省略），叙事写完后直接换行给 3 个选项，不要加"你必须做出选择"之类的过渡句。格式如下：
 
 [A] 行动
 [B] 行动
@@ -1374,31 +1374,28 @@ def build_prompt(state: GameState, event: dict,
         # Without this, small models write the scene as if the player were fine.
         if compromised:
             lines.append(
-                "重要：叙述必须体现你当前的身体/精神状态——根据「你的状态」里的标签，"
-                "让动作带上相应的吃力、颤抖、呼吸粗重、伤口灼痛、视线模糊、脚步发软、"
-                "或心理动摇等具体反应。不能写成健康状态。"
+                "重要：叙述要让身体反应符合「你的状态」标签——状态差的话动作要"
+                "受影响，不能写成精神饱满。"
             )
         if action_context:
             if outcome_hint:
+                # No example list — the model previously copied "敌人倒下的姿势"
+                # / "血的颜色和方向" verbatim from the directive into narrative.
                 lines.append(
-                    f"重要：上一回合的结果就是这句——「{outcome_hint}」。"
-                    f"叙述开头必须把这句话改写成新的画面/身体/感官描写——敌人倒下的姿势、"
-                    f"血的颜色和方向、物品在手里的重量、险险脱身时膝盖的颤抖等具体细节——"
-                    f"绝对不要照抄结果原句，要把它转写成另一种说法。如果结果与下面的事件矛盾，"
-                    f"以结果为准——事件只是结果发生之后世界的新变化。"
+                    f"重要：上一回合的结果（「{outcome_hint}」）必须用你自己的话改写成"
+                    f"具体的画面或身体感觉，不要原样照抄。结果和事件矛盾时以结果为准。"
                 )
             else:
                 lines.append(
-                    "重要：第一句话必须是「你的行动」的具体身体/感官结果——写你的手、"
-                    "脚、眼睛、呼吸正在怎样执行这个动作。绝对不要中途改主意去做别的事，"
-                    "也不要用事件覆盖这个动作。事件只是在动作进行中或完成后才介入的背景变化。"
+                    "重要：第一句必须写「你的行动」如何执行——身体如何动。不要中途换动作，"
+                    "也不要让事件覆盖这个动作。"
                 )
-        # Universal pronoun lock — placed last so it's the closest rule to
-        # the generation point. Q4_K_M still leaks "玩家" without this.
+        # Universal closing rule — placed last so it's the closest to the
+        # generation point. Strict 「你」-only + don't-pre-decide.
         lines.append(
-            "称呼规则：整段叙述只能用「你」称呼玩家，绝对不准出现「玩家」二字。"
-            "也不要替玩家做下一个决定——你的工作是写玩家这一回合做了什么的结果，"
-            "然后给3个选项 [A][B][C] 让玩家选下一步，不要在叙述里替玩家选下一个动作。"
+            "最后：叙述里只用「你」——禁止出现「玩家」「主角」「他」。"
+            "你只描写这一回合发生的事，不要替「你」做下一个动作；"
+            "写完直接给3个选项 [A][B][C]，不要加「你必须做出选择」之类的过渡句。"
         )
     else:
         # Same rationale as the zh block: avoid "Player" as a label that
@@ -1432,29 +1429,22 @@ def build_prompt(state: GameState, event: dict,
             lines.append("IMPORTANT: This is a key story event. Your narrative MUST focus on this event.")
         if compromised:
             lines.append(
-                "IMPORTANT: The narrative MUST physically reflect the player's current state — "
-                "use labored movements, shaking, heavy breathing, burning wounds, blurred vision, "
-                "weak legs, or mental fraying depending on the status tags above. "
-                "Do NOT write the scene as if the player were healthy."
+                "IMPORTANT: Body reactions must match the status tags above. "
+                "Do NOT write as if you were healthy."
             )
         if action_context:
             if outcome_hint:
+                # No example list — model echoed examples verbatim before.
                 lines.append(
-                    f"IMPORTANT: Last turn's outcome was: \"{outcome_hint}\" "
-                    f"REWRITE that outcome as fresh sensory description (the body's "
-                    f"position on the ground, the color and direction of the blood, the "
-                    f"weight of the item in your hand, your knees shaking after a narrow "
-                    f"escape) — DO NOT copy the outcome sentence verbatim. If the outcome "
-                    f"and the event below seem to contradict, the outcome wins — the event "
-                    f"is just what changes in the world AFTER that outcome."
+                    f"IMPORTANT: Rewrite the outcome (\"{outcome_hint}\") in your own "
+                    f"words as a concrete image or body sensation. Do NOT copy it "
+                    f"verbatim. If outcome and event conflict, outcome wins."
                 )
             else:
                 lines.append(
-                    "IMPORTANT: The first sentence MUST be the concrete physical/sensory "
-                    "result of your action — what your hands, feet, eyes, or breath "
-                    "do as you carry it out. Do NOT change your mind mid-narrative or "
-                    "abandon the action, and do NOT let the event replace the action. "
-                    "The event only complicates the action while or after it happens."
+                    "IMPORTANT: The first sentence must show 'Your action' executing — "
+                    "how your body moves. Don't change actions mid-narrative; don't let "
+                    "the event replace the action."
                 )
         # Pronoun lock — last so it's adjacent to the generation point.
         lines.append(
