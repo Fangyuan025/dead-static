@@ -112,8 +112,8 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class Config:
     # GGUF model settings
-    HF_REPO_ID = "Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf"
-    GGUF_FILENAME = "josiefied-qwen3-1.7b-abliterated-v1.q4_0.gguf"
+    HF_REPO_ID = "mradermacher/Josiefied-Qwen3-1.7B-abliterated-v1-GGUF"
+    GGUF_FILENAME = "Josiefied-Qwen3-1.7B-abliterated-v1.Q4_K_M.gguf"
     MODEL_DIR = os.path.join(_BASE_DIR, "models")
     GGUF_MODEL_PATH = os.path.join(MODEL_DIR, GGUF_FILENAME)
 
@@ -1554,7 +1554,7 @@ class RuntimeManager:
     @staticmethod
     def download_model(console=None) -> bool:
         """Download the GGUF model from HuggingFace."""
-        _print_msg(console, f"Downloading AI model: {Config.GGUF_FILENAME} (~1.05 GB)...", "bold yellow")
+        _print_msg(console, f"Downloading AI model: {Config.GGUF_FILENAME} (~1.2 GB)...", "bold yellow")
         try:
             from huggingface_hub import hf_hub_download
             os.makedirs(Config.MODEL_DIR, exist_ok=True)

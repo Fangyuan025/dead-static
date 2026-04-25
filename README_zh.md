@@ -40,7 +40,7 @@ python game.py
 
 首次启动时，游戏会自动下载：
 1. **llama-server**（约 200 MB，自动检测 CUDA 或 CPU 版本）
-2. **AI 模型**（约 1.05 GB，Q4 量化 GGUF）
+2. **AI 模型**（约 1.2 GB，Q4_K_M 量化 GGUF）
 
 之后无需联网。
 
@@ -73,7 +73,7 @@ python game.py
 
 游戏以后台子进程启动 `llama-server.exe`，通过 OpenAI 兼容的 HTTP API 通信。游戏退出时服务器自动关闭。自动检测 NVIDIA GPU 以启用 CUDA 加速；纯 CPU 模式同样可用。
 
-**模型：** [Josiefied-Qwen3-1.7B-abliterated-v1](https://huggingface.co/Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf)（Q4_0 量化，1.05 GB）
+**模型：** [Josiefied-Qwen3-1.7B-abliterated-v1](https://huggingface.co/mradermacher/Josiefied-Qwen3-1.7B-abliterated-v1-GGUF)（Q4_K_M 量化，1.2 GB）
 
 ### 剧情记忆（RAG）
 
@@ -183,7 +183,7 @@ release/DeadStatic/
   runtime/
     llama-server.exe    + CUDA DLLs
   models/
-    *.q4_0.gguf         (~1.05 GB)
+    *.Q4_K_M.gguf       (~1.2 GB)
   Play DeadStatic.bat
   README.txt
 ```
@@ -202,8 +202,8 @@ release/DeadStatic/
 
 ```python
 class Config:
-    HF_REPO_ID = "Goekdeniz-Guelmez/Josiefied-Qwen3-1.7B-abliterated-v1-gguf"
-    GGUF_FILENAME = "josiefied-qwen3-1.7b-abliterated-v1.q4_0.gguf"
+    HF_REPO_ID = "mradermacher/Josiefied-Qwen3-1.7B-abliterated-v1-GGUF"
+    GGUF_FILENAME = "Josiefied-Qwen3-1.7B-abliterated-v1.Q4_K_M.gguf"
     N_CTX = 4096              # 上下文窗口大小
     N_GPU_LAYERS = 99         # 卸载到 GPU 的层数
     SERVER_PORT = 8384        # 本地服务器端口
@@ -216,10 +216,11 @@ class Config:
 
 | 文件 | 大小 | 说明 |
 |------|------|------|
-| `...q4_0.gguf` | 1.05 GB | 默认。速度快，体积小。 |
-| `...q5_0.gguf` | 1.23 GB | 更好的质量。 |
-| `...q6_k.gguf` | 1.42 GB | 质量与速度平衡。 |
-| `...q8_0.gguf` | 1.83 GB | 接近无损。 |
+| `...Q3_K_M.gguf` | 1.0 GB | 最小可用版本。 |
+| `...Q4_K_M.gguf` | 1.2 GB | 默认。速度与质量平衡。 |
+| `...Q5_K_M.gguf` | 1.4 GB | 更好的质量。 |
+| `...Q6_K.gguf`   | 1.5 GB | 高质量。 |
+| `...Q8_0.gguf`   | 1.9 GB | 接近无损。 |
 
 修改 `Config` 中的 `GGUF_FILENAME` 即可切换。
 

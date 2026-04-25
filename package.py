@@ -32,7 +32,7 @@ DIST_DIR = os.path.join("dist", GAME_NAME)       # PyInstaller output
 RELEASE_DIR = os.path.join("release", GAME_NAME)  # Final package
 RUNTIME_DIR = "runtime"
 MODEL_DIR = "models"
-GGUF_FILENAME = "josiefied-qwen3-1.7b-abliterated-v1.q4_0.gguf"
+GGUF_FILENAME = "Josiefied-Qwen3-1.7B-abliterated-v1.Q4_K_M.gguf"
 
 
 def get_dir_size(path: str) -> str:
