@@ -137,7 +137,7 @@ class Config:
     # Game settings
     SAVE_FILE = "dead_static_save.json"
     MAX_HISTORY = 8
-    LLM_MAX_TOKENS = 250
+    LLM_MAX_TOKENS = 400
     LLM_TEMPERATURE = 0.7
     LLM_TOP_P = 0.9
 
@@ -1171,12 +1171,12 @@ RULES:
 1. If "Your action" is given, it is the PRIMARY subject of the narrative. Your opening sentence must be the physical/sensory result of THAT action — what your hands, feet, eyes, or breath do.
 2. NEVER contradict, reverse, or abandon the action. Chose to attack, you attack. Chose to search, you search. The event is backdrop, not a reason to override.
 3. The event complicates the action. It does not replace it.
-4. Second person — only "you". Never "the player" or a name or "they".
+4. Second person — only "you". Never "I", "the player", "they", "he/she", or a name.
 5. Describe concrete things — objects, sounds, textures. Avoid vague atmosphere.
 6. NO FABRICATION. Do not invent backstory, prior injuries, body parts that aren't there, or items the player isn't carrying (the pack line is the source of truth). Do not invent a different location, weather, or time of day. If you can't ground a detail in the prompt, leave it out.
 7. Do NOT quote these rules back inside the narrative. Don't write "you must choose", don't paste prompt labels ("Event:", "Scene:", "Your action:"), don't repeat directive examples ("the body's position on the ground" etc.) verbatim. The rules are for you, not the reader.
 8. Three choices must be clearly DIFFERENT actions (different verb, different target, different method), each ≤15 words, action only — no consequences, no dialogue, no quotes, no inner feelings. Bad: 'push the door open, but fail and collapse' (consequence); 'shout "help!"' (dialogue). Good: 'push the door open' / 'cut the rope' / 'hide behind the cabinet'.
-9. Write 50–100 words of narrative first (do not skip the narrative), then on a new line give the 3 options. Do NOT add transitions like "you must decide". Format:
+9. Write 70–110 words of narrative first (don't skip; cover the action's result, the event's impact, and one or two concrete sensory beats so the ending lands on a real choice point instead of a hard cut). Then on a new line give the 3 options. Do NOT add transitions like "you must decide". Format:
 
 [A] action
 [B] action
@@ -1188,12 +1188,12 @@ SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称（"你
 1. 如果给了「你的行动」，它就是叙事的主角。开头第一句必须写这个行动的身体/感官细节——你的手、脚、眼睛、呼吸怎么动。
 2. 绝对不要违背、反转、或中途放弃这个行动。选了进攻就进攻，选了搜索就搜索。事件是背景，不能覆盖行动。
 3. 事件让行动更复杂、更危险，但不能取代行动。
-4. 第二人称——只用"你"。不要出现"玩家""主角""他"或名字。
+4. 第二人称——只用"你"。不要出现"玩家""主角""他""她""我"或名字。
 5. 描写具体事物——物件、声响、质感——不要空泛气氛。
 6. 不要凭空捏造。不要发明背景（之前怎么受伤、从哪逃来）、不存在的伤、不在背包里的物品（背包行是真相）、当前场景之外的地点/天气/时段。任何不能从 prompt 里找到的细节都不要写。
 7. 不要把这些规则的文字搬进叙述本身。比如不要写"你必须做出选择"，不要把任何 prompt 里的指令、举例（"敌人倒下的姿势"之类）、标签（"事件:""场景:""你的行动:"）原样搬进叙事。规则是给你看的，叙述里只能出现场景里真实发生的事。
 8. 选项必须三个明显不同的动作（不同动作、不同目标、不同方法），每个 ≤15 字，只写"做什么"——不要带"却""但"再接后果，不要带引号台词，不要带感受。坏例子：'推开门，却因体力不足而倒地'（带后果）；'喊"救命"'（带台词）。好例子：'推开门'/'砍断绳子'/'躲到柜子后'。
-9. 先写 50–100 字叙事（必须写，不能省略），叙事写完后直接换行给 3 个选项，不要加"你必须做出选择"之类的过渡句。格式如下：
+9. 先写 120–180 字叙事（必须写，不能省略；叙事要把行动结果、事件影响、一两个具体感官细节都展开够，让结尾自然停在一个选择关头，而不是匆匆收尾）。叙事写完后直接换行给 3 个选项，不要加"你必须做出选择"之类的过渡句。格式如下：
 
 [A] 行动
 [B] 行动
@@ -1391,11 +1391,19 @@ def build_prompt(state: GameState, event: dict,
                     "也不要让事件覆盖这个动作。"
                 )
         # Universal closing rule — placed last so it's the closest to the
-        # generation point. Strict 「你」-only + don't-pre-decide.
+        # generation point. Strict 「你」-only + don't-pre-decide + no filler.
+        # Don't include a "good ending" example phrase — Q4_K_M copies it
+        # verbatim. Negative examples are safer because the model is told
+        # NOT to use them.
         lines.append(
-            "最后：叙述里只用「你」——禁止出现「玩家」「主角」「他」。"
-            "你只描写这一回合发生的事，不要替「你」做下一个动作；"
-            "写完直接给3个选项 [A][B][C]，不要加「你必须做出选择」之类的过渡句。"
+            "最后必须遵守：(1) 全程第二人称，只用「你」——绝不写「玩家」「主角」"
+            "「他」「她」「我」。(2) 不要替「你」做下一个动作，写完这回合的结果就停。"
+            "(3) 叙事的最后一句必须是具体画面或感官细节（声音、光线、气味、"
+            "触感、一道血迹、一个倒下的影子），不可以是设问、不可以是评论、"
+            "不可以提示玩家去选。以下结尾全部禁止："
+            "「你必须做出选择…」、「你只能选择…」、「你没有选择，只有…」、"
+            "「仿佛在催促你做出选择」、列举三个候选动作再换行给 [A][B][C]。"
+            "用具体的画面收尾，让读者自己感觉到该选了。"
         )
     else:
         # Same rationale as the zh block: avoid "Player" as a label that
@@ -1447,11 +1455,17 @@ def build_prompt(state: GameState, event: dict,
                     "the event replace the action."
                 )
         # Pronoun lock — last so it's adjacent to the generation point.
+        # No "good ending" example — model copies positive examples verbatim.
         lines.append(
-            "Voice: write in second person — say 'you', never 'the player' or a name. "
-            "Do NOT decide the player's next action for them — your job is to describe "
-            "what just happened, then offer 3 options [A][B][C] and STOP. The player "
-            "picks the next move."
+            "Final checks: (1) Second person only — 'you', never 'the player', "
+            "'they', 'I', 'he/she', or a name. (2) Do not decide the next action "
+            "for the player — describe what just happened, then stop. (3) The last "
+            "sentence must be a concrete sensory image (sound, light, smell, "
+            "texture, a smear of blood, a fallen shadow). NOT a rhetorical "
+            "question. NOT a comment. NOT a prompt to choose. ALL of these endings "
+            "are forbidden: 'You must choose...', 'You have no choice but to...', "
+            "'as if asking you to decide', listing the three candidate actions "
+            "before [A][B][C]. End on imagery so the reader feels the choice."
         )
 
     return "\n".join(lines)

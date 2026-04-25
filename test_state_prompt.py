@@ -197,7 +197,9 @@ def test_action_primacy_directive():
     ok("zh: directive forbids reversing the action",
        "不要中途换动作" in prompt, prompt[-400:])
     ok("zh: pronoun lock enforces second-person '你' (universal directive)",
-       "叙述里只用「你」" in prompt, prompt[-400:])
+       "全程第二人称，只用「你」" in prompt
+       and "绝不写「玩家」「主角」" in prompt,
+       prompt[-600:])
 
 
 def test_outcome_hint_emits_distinct_line():
@@ -281,8 +283,8 @@ def test_english_action_directive():
            and "don't let" in prompt
            and "replace the action" in prompt)
         ok("en: pronoun lock enforces 'you' (universal directive)",
-           "Voice: write in second person" in prompt
-           or "say 'you'" in prompt)
+           "Second person only — 'you'" in prompt,
+           prompt[-700:])
     finally:
         g.Config.LANG = "zh"
 
@@ -337,24 +339,30 @@ def test_pronoun_lock_directive():
     s = fresh_state()
     prompt = g.build_prompt(s, EVENT, action_context="搜索")
     ok("zh: pronoun-lock directive present",
-       "叙述里只用「你」" in prompt
-       and "禁止出现「玩家」" in prompt,
-       prompt[-500:])
+       "全程第二人称，只用「你」" in prompt
+       and "绝不写「玩家」「主角」" in prompt,
+       prompt[-700:])
     ok("zh: don't-pick-for-player ban present",
        "不要替「你」做下一个动作" in prompt
        and "你必须做出选择" in prompt,
-       prompt[-500:])
+       prompt[-700:])
+    ok("zh: filler ending bans present",
+       "「你必须做出选择…」" in prompt
+       and "「你没有选择，只有…」" in prompt,
+       prompt[-700:])
     g.Config.LANG = "en"
     try:
         prompt_en = g.build_prompt(s, EVENT, action_context="search")
         ok("en: pronoun-lock present",
-           ("say 'you', never 'the player'" in prompt_en)
-           or ("Voice: write in second person" in prompt_en),
-           prompt_en[-500:])
+           ("Second person only — 'you'" in prompt_en),
+           prompt_en[-700:])
         ok("en: don't-pick-for-player present",
-           ("Do NOT decide the player's next action" in prompt_en
-            or "Don't decide" in prompt_en),
-           prompt_en[-500:])
+           ("Do not decide the next action for the player" in prompt_en),
+           prompt_en[-700:])
+        ok("en: filler ending bans present",
+           "'You must choose...'" in prompt_en
+           and "'You have no choice but to...'" in prompt_en,
+           prompt_en[-700:])
     finally:
         g.Config.LANG = "zh"
 
