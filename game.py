@@ -996,7 +996,8 @@ class RulesEngine:
             # Clean win
             result["outcome"] = "clean_win"
             result["damage_taken"] = 0
-            result["narrative_hint"] = "You dispatched it efficiently."
+            result["narrative_hint"] = "You dispatched it efficiently. The body drops at your feet."
+            result["narrative_hint_zh"] = "你干净利落地解决了它，尸体瘫倒在你脚边。"
             player.kills += 1
             player.skills["combat"] = min(10, player.skills["combat"] + 0.2)
         elif player_power > enemy_power:
@@ -1006,10 +1007,12 @@ class RulesEngine:
             result["outcome"] = "messy_win"
             result["damage_taken"] = dmg
             result["narrative_hint"] = f"You took it down, but not before it got a hit in. (-{dmg} HP)"
+            result["narrative_hint_zh"] = f"你把它放倒了，但它也重重砸了你一下，身上开始发烫疼痛（-{dmg} HP）。"
             player.kills += 1
             if random.random() < 0.15:
                 player.infection += random.randint(5, 15)
                 result["narrative_hint"] += " You feel a burning sensation where it scratched you."
+                result["narrative_hint_zh"] += "它抓破的地方火辣辣地烧起来。"
         elif player_power > enemy_power - 5:
             # Narrow escape
             dmg = random.randint(15, 30)
@@ -1017,9 +1020,11 @@ class RulesEngine:
             result["outcome"] = "narrow_escape"
             result["damage_taken"] = dmg
             result["narrative_hint"] = f"You barely got away. (-{dmg} HP)"
+            result["narrative_hint_zh"] = f"你险险脱身，但身上已经带伤喘息（-{dmg} HP）。"
             if random.random() < 0.3:
                 player.infection += random.randint(10, 25)
                 result["narrative_hint"] += " Its teeth grazed your skin. That's not good."
+                result["narrative_hint_zh"] += "它的牙齿擦破了你的皮肤——这可不是好兆头。"
         else:
             # Bad outcome
             dmg = random.randint(25, 45)
@@ -1027,9 +1032,11 @@ class RulesEngine:
             result["outcome"] = "defeat"
             result["damage_taken"] = dmg
             result["narrative_hint"] = f"It overpowered you. (-{dmg} HP)"
+            result["narrative_hint_zh"] = f"它压制住了你，你被狠狠砸翻在地（-{dmg} HP）。"
             if random.random() < 0.5:
                 player.infection += random.randint(15, 35)
                 result["narrative_hint"] += " You've been bitten."
+                result["narrative_hint_zh"] += "你被咬了。"
 
         return result
 
@@ -1045,11 +1052,17 @@ class RulesEngine:
 
         if stealth_power > threat_level * 2 + 5:
             player.skills["stealth"] = min(10, player.skills["stealth"] + 0.2)
-            return {"outcome": "undetected", "narrative_hint": "You slipped past without a sound."}
+            return {"outcome": "undetected",
+                    "narrative_hint": "You slipped past without a sound.",
+                    "narrative_hint_zh": "你悄无声息地溜了过去，连呼吸都没被它听见。"}
         elif stealth_power > threat_level * 2:
-            return {"outcome": "close_call", "narrative_hint": "It almost saw you. Your heart hammers in your chest."}
+            return {"outcome": "close_call",
+                    "narrative_hint": "It almost saw you. Your heart hammers in your chest.",
+                    "narrative_hint_zh": "它几乎发现了你，你的心脏在胸腔里狂跳，额头沁出冷汗。"}
         else:
-            return {"outcome": "detected", "narrative_hint": "It spotted you. No choice now but to run or fight."}
+            return {"outcome": "detected",
+                    "narrative_hint": "It spotted you. No choice now but to run or fight.",
+                    "narrative_hint_zh": "它发现了你，目光锁死——现在只能跑或者打。"}
 
     @staticmethod
     def use_item(player: Player, item_name: str) -> dict:
@@ -1193,7 +1206,8 @@ def build_prompt(state: GameState, event: dict,
                  action_context: str = "", prev_narrative: str = "",
                  memory_snippets: str = "",
                  revisit_memory: str = "",
-                 lore_snippets: str = "") -> str:
+                 lore_snippets: str = "",
+                 outcome_hint: str = "") -> str:
     """Build prompt with labeled structure for small (1-3B) models.
 
     Labels help the model produce structured output (proper [A][B][C]).
@@ -1322,6 +1336,8 @@ def build_prompt(state: GameState, event: dict,
     if zh:
         if action_context:
             lines.append(f"玩家行动: {action_context}")
+        if outcome_hint:
+            lines.append(f"上一行动的结果: {outcome_hint}")
         if state_str:
             lines.append(f"玩家状态: {state_str}")
         if inv_str:
@@ -1356,15 +1372,26 @@ def build_prompt(state: GameState, event: dict,
                 "或心理动摇等具体反应。不能写成健康状态。"
             )
         if action_context:
-            lines.append(
-                "重要：第一句话必须是「玩家行动」的具体身体/感官结果——写玩家的手、"
-                "脚、眼睛、呼吸正在怎样执行这个动作。只用「你」称呼玩家，不要用「玩家」或名字。"
-                "绝对不要让玩家中途改主意去做别的事，也不要用事件覆盖这个动作。"
-                "事件只是在动作进行中或完成后才介入的背景变化。"
-            )
+            if outcome_hint:
+                lines.append(
+                    f"重要：上一回合的结果就是这句——「{outcome_hint}」。"
+                    f"叙述开头必须先把这句话物化为画面/身体/感官描写（敌人倒下的姿势、"
+                    f"血的颜色和方向、找到的物品在手里的重量、险险脱身时膝盖的颤抖等具体细节），"
+                    f"而不是另写一段不相关的气氛。如果结果与下面的事件矛盾，以结果为准——事件"
+                    f"只是结果发生之后世界的新变化。只用「你」称呼玩家，不要用「玩家」或名字。"
+                )
+            else:
+                lines.append(
+                    "重要：第一句话必须是「玩家行动」的具体身体/感官结果——写玩家的手、"
+                    "脚、眼睛、呼吸正在怎样执行这个动作。只用「你」称呼玩家，不要用「玩家」或名字。"
+                    "绝对不要让玩家中途改主意去做别的事，也不要用事件覆盖这个动作。"
+                    "事件只是在动作进行中或完成后才介入的背景变化。"
+                )
     else:
         if action_context:
             lines.append(f"Player action: {action_context}")
+        if outcome_hint:
+            lines.append(f"Outcome of that action: {outcome_hint}")
         if state_str:
             lines.append(f"Player status: {state_str}")
         if inv_str:
@@ -1396,14 +1423,26 @@ def build_prompt(state: GameState, event: dict,
                 "Do NOT write the scene as if the player were healthy."
             )
         if action_context:
-            lines.append(
-                "IMPORTANT: The first sentence MUST be the concrete physical/sensory "
-                "result of the Player action — what your hands, feet, eyes, or breath "
-                "do as you carry it out. Use 'you', never 'the player'. Do NOT have "
-                "the player change their mind or abandon the action, and do NOT let "
-                "the event replace the action. The event only complicates the action "
-                "while or after it happens."
-            )
+            if outcome_hint:
+                lines.append(
+                    f"IMPORTANT: Last turn's outcome was: \"{outcome_hint}\" "
+                    f"Your opening MUST physicalize that exact outcome (the body's "
+                    f"position on the ground, the color and direction of the blood, the "
+                    f"weight of the item in your hand, your knees shaking after a narrow "
+                    f"escape — concrete sensory details), NOT some unrelated atmospheric "
+                    f"beat. If the outcome and the event below seem to contradict, the "
+                    f"outcome wins — the event is just what changes in the world AFTER "
+                    f"that outcome. Use 'you', never 'the player'."
+                )
+            else:
+                lines.append(
+                    "IMPORTANT: The first sentence MUST be the concrete physical/sensory "
+                    "result of the Player action — what your hands, feet, eyes, or breath "
+                    "do as you carry it out. Use 'you', never 'the player'. Do NOT have "
+                    "the player change their mind or abandon the action, and do NOT let "
+                    "the event replace the action. The event only complicates the action "
+                    "while or after it happens."
+                )
 
     return "\n".join(lines)
 
@@ -2320,6 +2359,7 @@ class DeadStaticGame:
         self.llm = None
         self.current_options = {}
         self.last_action_context = ""  # Tracks what the player did last turn
+        self.last_outcome = ""  # Mechanical outcome of last action (combat result, loot, etc.)
         self.last_narrative = ""  # LLM's previous narrative output for continuity
         # RAG: episodic memory (long-horizon coherence via BM25 retrieval).
         # Session id defaults to "default" and is refreshed on each new_game().
@@ -2702,6 +2742,7 @@ class DeadStaticGame:
             memory_snippets=memory_snippets,
             revisit_memory=revisit_memory,
             lore_snippets=lore_snippets,
+            outcome_hint=self.last_outcome,
         )
         self.display.print_loading()
 
@@ -2786,12 +2827,15 @@ class DeadStaticGame:
                 extra_context.append(f"[Moved to {conn}]")
                 break
 
+        zh_lang = Config.LANG == "zh"
+
         # Combat detection
         combat_keywords = ["fight", "attack", "kill", "shoot", "swing", "stab", "confront", "charge",
                            "战斗", "攻击", "杀", "射击", "开枪", "刺", "砍", "冲", "举起武器", "武器"]
         if any(kw in chosen_action.lower() for kw in combat_keywords):
             result = self.rules.resolve_combat(self.state.player, self.state.world.threat_level)
-            extra_context.append(f"[Combat: {result['outcome']}. {result['narrative_hint']}]")
+            hint = result.get("narrative_hint_zh") if zh_lang else result["narrative_hint"]
+            extra_context.append(f"[Combat: {result['outcome']}. {hint}]")
             self.state.world.noise_level += result.get("noise_generated", 0)
 
         # Stealth detection
@@ -2799,7 +2843,8 @@ class DeadStaticGame:
                             "潜行", "躲", "藏", "安静", "避开", "悄悄", "绕过", "隐蔽"]
         if any(kw in chosen_action.lower() for kw in stealth_keywords):
             result = self.rules.resolve_stealth(self.state.player, self.state.world.threat_level, self.state.world.weather)
-            extra_context.append(f"[Stealth: {result['outcome']}. {result['narrative_hint']}]")
+            hint = result.get("narrative_hint_zh") if zh_lang else result["narrative_hint"]
+            extra_context.append(f"[Stealth: {result['outcome']}. {hint}]")
 
         # Scavenging / loot
         search_keywords = ["search", "loot", "scavenge", "look for", "check", "rummage", "open", "grab",
@@ -2845,32 +2890,46 @@ class DeadStaticGame:
             self.state.player.morale = max(0, min(100, self.state.player.morale + morale_change))
             extra_context.append(f"[Rested. +{stamina_restore} stamina, +{hp_restore} HP]")
 
-        # 9. Save the action + outcome for next turn's LLM prompt
+        # 9. Save the action + outcome for next turn's LLM prompt.
+        #    action_context stays pure (just the player's chosen action text);
+        #    outcome goes in its own last_outcome field so build_prompt can
+        #    emit a distinct, prominent "上一行动的结果" line. Small models
+        #    ignore parenthetical mechanical hints buried inside actions.
         self.last_action_context = chosen_action
+        self.last_outcome = ""
         if extra_context:
-            # Convert mechanical tags to narrative hints
             hints = []
             zh = Config.LANG == "zh"
             for ctx in extra_context:
                 ctx = ctx.strip("[]")
                 if ctx.startswith("Combat:"):
-                    hints.append(ctx.replace("Combat: ", ""))
+                    # Drop the "clean_win." outcome code, keep the prose hint
+                    tail = ctx[len("Combat:"):].strip()
+                    if "." in tail:
+                        tail = tail.split(".", 1)[1].strip()
+                    hints.append(tail)
                 elif ctx.startswith("Stealth:"):
-                    hints.append(ctx.replace("Stealth: ", ""))
+                    tail = ctx[len("Stealth:"):].strip()
+                    if "." in tail:
+                        tail = tail.split(".", 1)[1].strip()
+                    hints.append(tail)
                 elif ctx.startswith("Found:"):
                     item = ctx.replace("Found: ", "")
-                    hints.append(f"找到了{item}" if zh else f"found {item}")
+                    hints.append(f"你在这里找到了{item}，现在拿在手里。"
+                                 if zh else f"You found {item} here; it's in your hands now.")
                 elif ctx.startswith("Spotted"):
                     item = ctx.replace("Spotted ", "").replace(" but inventory is full", "")
-                    hints.append(f"看到了{item}但背包满了" if zh else ctx)
+                    hints.append(f"你看见{item}，但背包已经满了。"
+                                 if zh else ctx)
                 elif ctx.startswith("Moved to"):
-                    pass  # movement is obvious from location change
+                    pass  # location change is already visible in scene line
                 elif ctx.startswith("Rested"):
-                    hints.append("休息并恢复了一些体力" if zh else "rested and recovered some energy")
+                    hints.append("你歇了一会儿，体力回来了一些。"
+                                 if zh else "You rested and got some energy back.")
                 else:
                     hints.append(ctx)
             if hints:
-                self.last_action_context += " (" + "; ".join(hints) + ")"
+                self.last_outcome = " ".join(hints)
 
         # 10. Update history
         summary = f"Day {self.state.world.day} {self.state.world.time_of_day.value}: {chosen_action}"
@@ -2956,6 +3015,7 @@ class DeadStaticGame:
         """Core game loop. Can be called again on restart without re-initializing LLM."""
         self.current_options = {}
         self.last_action_context = ""
+        self.last_outcome = ""
         self.last_narrative = ""
         if restart:
             self.new_game()

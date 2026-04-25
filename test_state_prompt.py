@@ -200,6 +200,62 @@ def test_action_primacy_directive():
        "只用「你」称呼玩家" in prompt, prompt[-400:])
 
 
+def test_outcome_hint_emits_distinct_line():
+    """When build_prompt receives outcome_hint, it must emit a labeled
+    '上一行动的结果' line distinct from '玩家行动'."""
+    g.Config.LANG = "zh"
+    s = fresh_state()
+    prompt = g.build_prompt(
+        s, EVENT,
+        action_context="冲上去砍丧尸",
+        outcome_hint="你干净利落地解决了它，尸体瘫倒在你脚边。",
+    )
+    ok("zh: '上一行动的结果' line present",
+       "上一行动的结果: 你干净利落地解决了它" in prompt, prompt[:400])
+    ok("zh: action and outcome are SEPARATE lines",
+       "玩家行动: 冲上去砍丧尸\n上一行动的结果:" in prompt, prompt[:400])
+    ok("zh: outcome NOT jammed into action with parens",
+       "(你干净利落地解决了它" not in prompt
+       and "（你干净利落地解决了它" not in prompt)
+    # Outcome should also appear inside the directive (for emphasis)
+    ok("zh: directive inlines the outcome text",
+       "你干净利落地解决了它" in prompt
+       and "上一回合的结果就是这句" in prompt,
+       prompt[-500:])
+
+
+def test_outcome_hint_absent_falls_back():
+    """When no outcome_hint, the fallback action directive is used."""
+    g.Config.LANG = "zh"
+    s = fresh_state()
+    prompt = g.build_prompt(
+        s, EVENT, action_context="冲上去砍丧尸", outcome_hint="")
+    ok("no outcome → no '上一行动的结果' line",
+       "上一行动的结果:" not in prompt)
+    ok("no outcome → fallback directive (action body result)",
+       "第一句话必须是" in prompt)
+    ok("no outcome → no outcome-specific directive",
+       "上一回合的结果就是这句" not in prompt)
+
+
+def test_english_outcome_hint():
+    g.Config.LANG = "en"
+    try:
+        s = fresh_state()
+        prompt = g.build_prompt(
+            s, EVENT,
+            action_context="charge the zombie",
+            outcome_hint="You dispatched it efficiently. The body drops at your feet.",
+        )
+        ok("en: 'Outcome of that action' line present",
+           "Outcome of that action: You dispatched it efficiently" in prompt)
+        ok("en: directive inlines outcome",
+           "Last turn's outcome was:" in prompt
+           and "The body drops at your feet" in prompt)
+    finally:
+        g.Config.LANG = "zh"
+
+
 def test_action_directive_absent_when_no_action():
     """With no action_context, no action-primacy directive fires."""
     g.Config.LANG = "zh"
@@ -248,6 +304,47 @@ def test_english_output_parity():
         g.Config.LANG = "zh"
 
 
+def test_resolve_combat_has_chinese_hint():
+    """All four combat outcomes now expose a Chinese-language hint
+    in addition to the English one. Exercise many seeds to hit each branch."""
+    import random as _r
+    rules = g.RulesEngine()
+    p = g.Player(); p.equipped_weapon = "kitchen knife"
+    p.skills = {"combat": 5, "stealth": 1, "medical": 1, "survival": 1, "persuasion": 1}
+    seen = set()
+    all_have_zh = True
+    for seed in range(40):
+        _r.seed(seed)
+        p.health = 100
+        result = rules.resolve_combat(p, threat_level=4)
+        seen.add(result["outcome"])
+        if not result.get("narrative_hint_zh"):
+            all_have_zh = False
+    ok("every combat result carries narrative_hint_zh", all_have_zh)
+    ok("combat tests cover ≥2 distinct outcomes",
+       len(seen) >= 2, f"seen={seen}")
+
+
+def test_resolve_stealth_has_chinese_hint():
+    import random as _r
+    rules = g.RulesEngine()
+    p = g.Player()
+    p.skills = {"combat": 1, "stealth": 2, "medical": 1, "survival": 1, "persuasion": 1}
+    seen = set()
+    all_have_zh = True
+    # Sweep threat levels so we hit all three outcome bands
+    for seed in range(40):
+        for threat in (2, 5, 8):
+            _r.seed(seed * 10 + threat)
+            result = rules.resolve_stealth(p, threat_level=threat)
+            seen.add(result["outcome"])
+            if not result.get("narrative_hint_zh"):
+                all_have_zh = False
+    ok("every stealth result carries narrative_hint_zh", all_have_zh)
+    ok("stealth tests cover ≥2 distinct outcomes",
+       len(seen) >= 2, f"seen={seen}")
+
+
 def main():
     test_healthy_state_minimal()
     test_graded_injury_numbers()
@@ -259,9 +356,14 @@ def main():
     test_no_relief_when_thresholds_not_met()
     test_compromised_triggers_body_directive()
     test_action_primacy_directive()
+    test_outcome_hint_emits_distinct_line()
+    test_outcome_hint_absent_falls_back()
+    test_english_outcome_hint()
     test_action_directive_absent_when_no_action()
     test_english_action_directive()
     test_english_output_parity()
+    test_resolve_combat_has_chinese_hint()
+    test_resolve_stealth_has_chinese_hint()
     print(f"\n── Results: {PASS} passed, {FAIL} failed ──")
     sys.exit(0 if FAIL == 0 else 1)
 
