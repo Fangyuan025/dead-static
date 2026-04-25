@@ -1,7 +1,7 @@
 """Headless tests for build_prompt's state/inventory/relief/body-directive
 injection — the "state memory" fix.
 
-Background: the 1.7B model ignored the player's condition because the prompt
+Background: the small model ignored the player's condition because the prompt
 only flagged binary tags ("wounded"). The fix injects:
   1. graded state (numbers + severity label)
   2. always-visible inventory
