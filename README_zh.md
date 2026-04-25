@@ -274,6 +274,8 @@ installer.iss          Inno Setup Windows 安装程序脚本
 requirements.txt       Python 依赖
 test_rag.py            剧情记忆的离线单元测试（18 个）
 test_lore.py           场景语料的离线单元测试（26 个）
+test_state_prompt.py   提示词构造器的离线测试 — 分级状态、背包锚定、
+                       行动优先、结果物化、防止凭空捏造（76 个）
 test_summarizer.py     摘要器在真实 llama-server 上的质量测试
 test_rag_live.py       剧情记忆端到端脚本化试跑（9 个）
 test_lore_live.py      场景语料注入端到端试跑（14 个）

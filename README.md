@@ -272,6 +272,9 @@ installer.iss          Inno Setup script for Windows installer
 requirements.txt       Python dependencies
 test_rag.py            Headless unit tests for episodic RAG (18 cases)
 test_lore.py           Headless unit tests for the lore corpus (26 cases)
+test_state_prompt.py   Headless unit tests for prompt builder — graded
+                       state, inventory grounding, action primacy, outcome
+                       physicalization, fabrication guard (76 cases)
 test_summarizer.py     Summarizer-quality tests against live llama-server
 test_rag_live.py       End-to-end episodic RAG scripted playthrough (9 cases)
 test_lore_live.py      End-to-end lore injection playthrough (14 cases)
