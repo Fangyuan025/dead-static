@@ -64,9 +64,9 @@ def test_healthy_state_minimal():
     g.Config.LANG = "zh"
     s = fresh_state()
     prompt = g.build_prompt(s, EVENT, action_context="搜索")
-    ok("healthy: no '玩家状态' line", "玩家状态" not in prompt, prompt)
+    ok("healthy: no '你的状态' line", "你的状态" not in prompt, prompt)
     ok("healthy: no body directive",
-       "叙述必须体现玩家当前的身体" not in prompt)
+       "叙述必须体现你当前的身体" not in prompt)
     ok("healthy: no '可用资源' line", "可用资源" not in prompt)
 
 
@@ -79,7 +79,7 @@ def test_graded_injury_numbers():
     ok("HP=15 prompt contains HP number", "HP 15/100" in prompt, prompt)
     ok("HP=15 prompt contains '重伤' label", "重伤" in prompt, prompt)
     ok("HP=15 triggers body directive",
-       "叙述必须体现玩家当前的身体" in prompt)
+       "叙述必须体现你当前的身体" in prompt)
 
 
 def test_grading_thresholds():
@@ -179,7 +179,7 @@ def test_compromised_triggers_body_directive():
         s = fresh_state(); mutate(s)
         prompt = g.build_prompt(s, EVENT)
         ok(f"body directive fires for {label}",
-           "叙述必须体现玩家当前的身体" in prompt, prompt[:200])
+           "叙述必须体现你当前的身体" in prompt, prompt[:200])
 
 
 def test_action_primacy_directive():
@@ -189,20 +189,20 @@ def test_action_primacy_directive():
     g.Config.LANG = "zh"
     s = fresh_state()
     prompt = g.build_prompt(s, EVENT, action_context="冲上去砍丧尸")
-    ok("zh: prompt has '玩家行动' line with action",
-       "玩家行动: 冲上去砍丧尸" in prompt, prompt[:300])
+    ok("zh: prompt has '你的行动' line with action",
+       "你的行动: 冲上去砍丧尸" in prompt, prompt[:300])
     ok("zh: action directive present (first sentence = action body result)",
        "第一句话必须是" in prompt and "具体身体/感官结果" in prompt,
        prompt[-400:])
     ok("zh: directive forbids reversing the action",
-       "绝对不要让玩家中途改主意" in prompt, prompt[-400:])
-    ok("zh: directive enforces second-person '你'",
-       "只用「你」称呼玩家" in prompt, prompt[-400:])
+       "绝对不要中途改主意" in prompt, prompt[-400:])
+    ok("zh: pronoun lock enforces second-person '你' (universal directive)",
+       "整段叙述只能用「你」称呼玩家" in prompt, prompt[-400:])
 
 
 def test_outcome_hint_emits_distinct_line():
     """When build_prompt receives outcome_hint, it must emit a labeled
-    '上一行动的结果' line distinct from '玩家行动'."""
+    '上一行动的结果' line distinct from '你的行动'."""
     g.Config.LANG = "zh"
     s = fresh_state()
     prompt = g.build_prompt(
@@ -213,7 +213,7 @@ def test_outcome_hint_emits_distinct_line():
     ok("zh: '上一行动的结果' line present",
        "上一行动的结果: 你干净利落地解决了它" in prompt, prompt[:400])
     ok("zh: action and outcome are SEPARATE lines",
-       "玩家行动: 冲上去砍丧尸\n上一行动的结果:" in prompt, prompt[:400])
+       "你的行动: 冲上去砍丧尸\n上一行动的结果:" in prompt, prompt[:400])
     ok("zh: outcome NOT jammed into action with parens",
        "(你干净利落地解决了它" not in prompt
        and "（你干净利落地解决了它" not in prompt)
@@ -261,7 +261,7 @@ def test_action_directive_absent_when_no_action():
     g.Config.LANG = "zh"
     s = fresh_state()
     prompt = g.build_prompt(s, EVENT, action_context="")
-    ok("no action → no '玩家行动' line", "玩家行动:" not in prompt)
+    ok("no action → no '你的行动' line", "你的行动:" not in prompt)
     ok("no action → no first-sentence directive",
        "第一句话必须是" not in prompt)
 
@@ -272,14 +272,15 @@ def test_english_action_directive():
     try:
         s = fresh_state()
         prompt = g.build_prompt(s, EVENT, action_context="charge the zombie")
-        ok("en: 'Player action:' line with action",
-           "Player action: charge the zombie" in prompt)
+        ok("en: 'Your action:' line with action",
+           "Your action: charge the zombie" in prompt)
         ok("en: first-sentence directive present",
            "first sentence MUST be the concrete physical/sensory" in prompt)
         ok("en: forbids reversing",
-           "Do NOT have" in prompt and "abandon the action" in prompt)
-        ok("en: enforces 'you'",
-           "Use 'you', never 'the player'" in prompt)
+           "Do NOT change your mind" in prompt
+           and "abandon the action" in prompt)
+        ok("en: pronoun lock enforces 'you' (universal directive)",
+           "say 'you', never 'the player'" in prompt)
     finally:
         g.Config.LANG = "zh"
 
@@ -302,6 +303,113 @@ def test_english_output_parity():
            "narrative MUST physically reflect" in prompt)
     finally:
         g.Config.LANG = "zh"
+
+
+def test_no_player_label_in_prompt():
+    """The labels feeding the model must NOT contain '玩家'/'Player' as
+    a noun the model can echo. Q4_K_M parrots prompt labels into
+    narrative ('玩家行动:' → '玩家的手在颤抖')."""
+    g.Config.LANG = "zh"
+    s = fresh_state()
+    s.player.health = 50  # trigger compromised body directive
+    s.player.inventory = ["canned beans", "kitchen knife"]
+    prompt = g.build_prompt(
+        s, EVENT,
+        action_context="搜索橱柜",
+        outcome_hint="你找到一个空罐头。",
+    )
+    # Structural labels must not contain the bare noun 玩家
+    BAD_LABELS = ["玩家行动:", "玩家状态:", "玩家可能选择"]
+    for bad in BAD_LABELS:
+        ok(f"zh: prompt does NOT contain bare label {bad!r}",
+           bad not in prompt, prompt)
+    # Friendly second-person labels ARE present
+    ok("zh: '你的行动:' label present", "你的行动:" in prompt)
+    ok("zh: '你的状态:' label present", "你的状态:" in prompt)
+
+
+def test_pronoun_lock_directive():
+    """The closing pronoun-lock directive must appear with the bans on
+    '玩家' and on picking the next action for the player."""
+    g.Config.LANG = "zh"
+    s = fresh_state()
+    prompt = g.build_prompt(s, EVENT, action_context="搜索")
+    ok("zh: pronoun-lock directive present",
+       "整段叙述只能用「你」称呼玩家" in prompt
+       and "绝对不准出现「玩家」二字" in prompt,
+       prompt[-500:])
+    ok("zh: don't-pick-for-player ban present",
+       "不要替玩家做下一个决定" in prompt
+       and "不要在叙述里替玩家选下一个动作" in prompt,
+       prompt[-500:])
+    g.Config.LANG = "en"
+    try:
+        prompt_en = g.build_prompt(s, EVENT, action_context="search")
+        ok("en: pronoun-lock present",
+           "say 'you', never 'the player'" in prompt_en,
+           prompt_en[-500:])
+        ok("en: don't-pick-for-player present",
+           "Do NOT decide the player's next action" in prompt_en
+           and "STOP" in prompt_en,
+           prompt_en[-500:])
+    finally:
+        g.Config.LANG = "zh"
+
+
+def test_anti_verbatim_outcome_clause():
+    """The outcome directive must instruct REWRITING, not echoing."""
+    g.Config.LANG = "zh"
+    s = fresh_state()
+    prompt = g.build_prompt(
+        s, EVENT,
+        action_context="举刀砍丧尸",
+        outcome_hint="你干净利落地解决了它，尸体瘫倒在你脚边。",
+    )
+    ok("zh: outcome directive forbids verbatim copy",
+       "绝对不要照抄结果原句" in prompt or "不要照抄结果" in prompt,
+       prompt[-600:])
+    g.Config.LANG = "en"
+    try:
+        prompt_en = g.build_prompt(
+            s, EVENT,
+            action_context="charge it",
+            outcome_hint="You dispatched it efficiently.",
+        )
+        ok("en: outcome directive forbids verbatim copy",
+           "DO NOT copy the outcome sentence verbatim" in prompt_en,
+           prompt_en[-600:])
+    finally:
+        g.Config.LANG = "zh"
+
+
+def test_long_action_context_trimming():
+    """Picking a 50+ char option should leave last_action_context ≤ 25
+    chars (or trimmed to first clause). Test the same logic build_prompt
+    consumes from."""
+    # Mirror the trim logic from game_turn step 9
+    def trim(chosen):
+        compact = chosen
+        if len(compact) > 25:
+            for sep in "，。！？；,;.":
+                if sep in compact:
+                    head = compact.split(sep, 1)[0]
+                    if 3 <= len(head) <= 25:
+                        return head
+            return compact[:25]
+        return compact
+
+    long_action = "拼尽全力推开门，却因体力不足而倒退几步，手电筒在墙上投下摇晃的阴影。"
+    trimmed = trim(long_action)
+    ok("long action trimmed to first clause",
+       trimmed == "拼尽全力推开门",
+       f"got {trimmed!r}")
+    ok("trimmed length ≤ 25", len(trimmed) <= 25)
+    # Short action passes through
+    ok("short action unchanged", trim("搜索") == "搜索")
+    # Action with no separator is hard-cut to 25
+    no_sep = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg"
+    ok("no-separator long action hard-cut to 25",
+       len(trim(no_sep)) == 25)
 
 
 def test_combat_keyword_classifier():
@@ -422,6 +530,10 @@ def main():
     test_action_directive_absent_when_no_action()
     test_english_action_directive()
     test_english_output_parity()
+    test_no_player_label_in_prompt()
+    test_pronoun_lock_directive()
+    test_anti_verbatim_outcome_clause()
+    test_long_action_context_trimming()
     test_combat_keyword_classifier()
     test_anti_fabrication_rule_in_system_prompt()
     test_resolve_combat_has_chinese_hint()

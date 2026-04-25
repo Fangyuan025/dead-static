@@ -1185,12 +1185,12 @@ RULES:
 SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称（"你"）。现在时。简洁有力。必须用中文。
 
 规则：
-1. 如果给了玩家行动，它就是叙事的主角。开头第一句必须写这个行动的具体身体/感官结果——玩家的手、脚、眼睛、呼吸正在如何执行这个动作。
-2. 绝对不要违背、反转、或中途放弃玩家的行动。玩家选择进攻，就让他进攻，不要改写成躲藏；玩家选择搜索，就让他搜索，不要改写成逃跑。事件是行动发生的背景，不是用来覆盖玩家选择的。
+1. 如果给了「你的行动」，它就是叙事的主角。开头第一句必须写这个行动的具体身体/感官结果——你的手、脚、眼睛、呼吸正在如何执行这个动作。
+2. 绝对不要违背、反转、或中途放弃这个行动。选了进攻，就进攻，不要改写成躲藏；选了搜索，就搜索，不要改写成逃跑。事件是行动发生的背景，不是用来覆盖选择的。
 3. 事件是世界对这个行动的反应——它可以让行动更复杂、更危险，但不能取代行动本身。
-4. 用"你"称呼玩家，绝对不要用"玩家"或名字。全程保持第二人称。
-5. 描写玩家看到、听到、摸到的具体事物——具体的物件、声响、质感——不要空泛的气氛描写。
-6. 不要假设玩家拿起或使用行动中没提到的东西。选项应该是"搜索""前往""躲藏""交谈"等动作，不要写"拿起X"。
+4. 全程第二人称——只用"你"。绝对不准出现"玩家"二字，也不要用名字、"主角"、"他"指代玩家。
+5. 描写你看到、听到、摸到的具体事物——具体的物件、声响、质感——不要空泛的气氛描写。
+6. 不要假设你拿起或使用行动中没提到的东西。选项应该是"搜索""前往""躲藏""交谈"等动作，不要写"拿起X"。
 7. 不要凭空捏造。不要发明玩家不存在的过往（"逃亡中被铁门压坏"之类）、不存在的伤（"溃烂的脚趾"）、不在背包里的物品（背包行就是真相）；不要把场景换成别处的地点、天气、时段——只能写「场景」行说的那个地点。任何细节如果不能从 prompt 里找到依据，就不要写。
 8. 选项必须是场景中一个人真的能做的合理行动。
 9. 写50-100字叙事，然后给恰好3个选项，格式如下：
@@ -1336,16 +1336,21 @@ def build_prompt(state: GameState, event: dict,
 
     lines = []
     if zh:
+        # Labels intentionally start with "你的" instead of "玩家".
+        # Stronger instruction-following models (Q4_K_M+) treat the prompt's
+        # protagonist label as the canonical name and parrot it back into
+        # the narrative. "玩家行动:" → narrator writes "玩家的手在颤抖".
+        # Putting "你" up front so the model copies "你" instead.
         if action_context:
-            lines.append(f"玩家行动: {action_context}")
+            lines.append(f"你的行动: {action_context}")
         if outcome_hint:
             lines.append(f"上一行动的结果: {outcome_hint}")
         if state_str:
-            lines.append(f"玩家状态: {state_str}")
+            lines.append(f"你的状态: {state_str}")
         if inv_str:
             lines.append(inv_str)
         if relief_hints:
-            lines.append(f"可用资源: {'，'.join(relief_hints)}（玩家可能选择使用）")
+            lines.append(f"可用资源: {'，'.join(relief_hints)}（你可能选择使用）")
         lines.append(f"场景: {loc_name}——{loc_desc}")
         lines.append(f"第{w.day}天，{t(w.time_of_day.value)}，{t(w.weather.value)}。威胁{w.threat_level}/10。武器: {weapon_str}。")
         lines.append(f"细节: {detail}。")
@@ -1360,7 +1365,7 @@ def build_prompt(state: GameState, event: dict,
         # Small models respond better to an imperative placed close to the generation point.
         if revisit_memory:
             lines.append(
-                f"重要：这不是玩家第一次来这里。上次：{revisit_memory}。"
+                f"重要：这不是你第一次来这里。上次：{revisit_memory}。"
                 f"叙述开头必须点出'再次'，可以顺带呼应上次在这里发生的事。"
             )
         if is_story:
@@ -1369,7 +1374,7 @@ def build_prompt(state: GameState, event: dict,
         # Without this, small models write the scene as if the player were fine.
         if compromised:
             lines.append(
-                "重要：叙述必须体现玩家当前的身体/精神状态——根据「玩家状态」里的标签，"
+                "重要：叙述必须体现你当前的身体/精神状态——根据「你的状态」里的标签，"
                 "让动作带上相应的吃力、颤抖、呼吸粗重、伤口灼痛、视线模糊、脚步发软、"
                 "或心理动摇等具体反应。不能写成健康状态。"
             )
@@ -1377,29 +1382,37 @@ def build_prompt(state: GameState, event: dict,
             if outcome_hint:
                 lines.append(
                     f"重要：上一回合的结果就是这句——「{outcome_hint}」。"
-                    f"叙述开头必须先把这句话物化为画面/身体/感官描写（敌人倒下的姿势、"
-                    f"血的颜色和方向、找到的物品在手里的重量、险险脱身时膝盖的颤抖等具体细节），"
-                    f"而不是另写一段不相关的气氛。如果结果与下面的事件矛盾，以结果为准——事件"
-                    f"只是结果发生之后世界的新变化。只用「你」称呼玩家，不要用「玩家」或名字。"
+                    f"叙述开头必须把这句话改写成新的画面/身体/感官描写——敌人倒下的姿势、"
+                    f"血的颜色和方向、物品在手里的重量、险险脱身时膝盖的颤抖等具体细节——"
+                    f"绝对不要照抄结果原句，要把它转写成另一种说法。如果结果与下面的事件矛盾，"
+                    f"以结果为准——事件只是结果发生之后世界的新变化。"
                 )
             else:
                 lines.append(
-                    "重要：第一句话必须是「玩家行动」的具体身体/感官结果——写玩家的手、"
-                    "脚、眼睛、呼吸正在怎样执行这个动作。只用「你」称呼玩家，不要用「玩家」或名字。"
-                    "绝对不要让玩家中途改主意去做别的事，也不要用事件覆盖这个动作。"
-                    "事件只是在动作进行中或完成后才介入的背景变化。"
+                    "重要：第一句话必须是「你的行动」的具体身体/感官结果——写你的手、"
+                    "脚、眼睛、呼吸正在怎样执行这个动作。绝对不要中途改主意去做别的事，"
+                    "也不要用事件覆盖这个动作。事件只是在动作进行中或完成后才介入的背景变化。"
                 )
+        # Universal pronoun lock — placed last so it's the closest rule to
+        # the generation point. Q4_K_M still leaks "玩家" without this.
+        lines.append(
+            "称呼规则：整段叙述只能用「你」称呼玩家，绝对不准出现「玩家」二字。"
+            "也不要替玩家做下一个决定——你的工作是写玩家这一回合做了什么的结果，"
+            "然后给3个选项 [A][B][C] 让玩家选下一步，不要在叙述里替玩家选下一个动作。"
+        )
     else:
+        # Same rationale as the zh block: avoid "Player" as a label that
+        # the model can echo into narrative as a 3rd-person noun. Use "Your".
         if action_context:
-            lines.append(f"Player action: {action_context}")
+            lines.append(f"Your action: {action_context}")
         if outcome_hint:
             lines.append(f"Outcome of that action: {outcome_hint}")
         if state_str:
-            lines.append(f"Player status: {state_str}")
+            lines.append(f"Your status: {state_str}")
         if inv_str:
             lines.append(inv_str)
         if relief_hints:
-            lines.append(f"Available resources: {', '.join(relief_hints)} (the player may choose to use them)")
+            lines.append(f"Available resources: {', '.join(relief_hints)} (you may choose to use them)")
         lines.append(f"Scene: {w.location} — {loc_desc}")
         lines.append(f"Day {w.day}, {w.time_of_day.value}, {w.weather.value}. Threat {w.threat_level}/10. Weapon: {weapon_str}.")
         lines.append(f"Detail: {detail}.")
@@ -1421,30 +1434,35 @@ def build_prompt(state: GameState, event: dict,
             lines.append(
                 "IMPORTANT: The narrative MUST physically reflect the player's current state — "
                 "use labored movements, shaking, heavy breathing, burning wounds, blurred vision, "
-                "weak legs, or mental fraying depending on the Player status tags. "
+                "weak legs, or mental fraying depending on the status tags above. "
                 "Do NOT write the scene as if the player were healthy."
             )
         if action_context:
             if outcome_hint:
                 lines.append(
                     f"IMPORTANT: Last turn's outcome was: \"{outcome_hint}\" "
-                    f"Your opening MUST physicalize that exact outcome (the body's "
+                    f"REWRITE that outcome as fresh sensory description (the body's "
                     f"position on the ground, the color and direction of the blood, the "
                     f"weight of the item in your hand, your knees shaking after a narrow "
-                    f"escape — concrete sensory details), NOT some unrelated atmospheric "
-                    f"beat. If the outcome and the event below seem to contradict, the "
-                    f"outcome wins — the event is just what changes in the world AFTER "
-                    f"that outcome. Use 'you', never 'the player'."
+                    f"escape) — DO NOT copy the outcome sentence verbatim. If the outcome "
+                    f"and the event below seem to contradict, the outcome wins — the event "
+                    f"is just what changes in the world AFTER that outcome."
                 )
             else:
                 lines.append(
                     "IMPORTANT: The first sentence MUST be the concrete physical/sensory "
-                    "result of the Player action — what your hands, feet, eyes, or breath "
-                    "do as you carry it out. Use 'you', never 'the player'. Do NOT have "
-                    "the player change their mind or abandon the action, and do NOT let "
-                    "the event replace the action. The event only complicates the action "
-                    "while or after it happens."
+                    "result of your action — what your hands, feet, eyes, or breath "
+                    "do as you carry it out. Do NOT change your mind mid-narrative or "
+                    "abandon the action, and do NOT let the event replace the action. "
+                    "The event only complicates the action while or after it happens."
                 )
+        # Pronoun lock — last so it's adjacent to the generation point.
+        lines.append(
+            "Voice: write in second person — say 'you', never 'the player' or a name. "
+            "Do NOT decide the player's next action for them — your job is to describe "
+            "what just happened, then offer 3 options [A][B][C] and STOP. The player "
+            "picks the next move."
+        )
 
     return "\n".join(lines)
 
@@ -2919,7 +2937,22 @@ class DeadStaticGame:
         #    outcome goes in its own last_outcome field so build_prompt can
         #    emit a distinct, prominent "上一行动的结果" line. Small models
         #    ignore parenthetical mechanical hints buried inside actions.
-        self.last_action_context = chosen_action
+        # Trim long option text down to its first clause/sentence — the
+        # model sometimes emits 50+ char options ("拼尽全力推开门，却因体力
+        # 不足而倒退几步，手电筒在墙上投下摇晃的阴影") which then become
+        # next turn's "你的行动:" line and bloat the prompt. Keep only the
+        # first clause separator (Chinese ， 。 ！ ？ ; .) ≤25 chars.
+        compact = chosen_action
+        if len(compact) > 25:
+            for sep in "，。！？；,;.":
+                if sep in compact:
+                    head = compact.split(sep, 1)[0]
+                    if 3 <= len(head) <= 25:
+                        compact = head
+                        break
+            else:
+                compact = compact[:25]
+        self.last_action_context = compact
         self.last_outcome = ""
         if extra_context:
             hints = []
