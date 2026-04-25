@@ -1174,8 +1174,9 @@ RULES:
 4. Use "you", never "the player" or a name. Stay in second person the entire time.
 5. Describe concrete things the player sees, hears, or touches — specific objects, sounds, textures — not vague atmosphere.
 6. Do NOT assume the player picks up, grabs, or uses anything not named in the action. Choices should be actions like "search", "move to", "hide", "talk to", not "pick up X".
-7. Choices must be realistic actions a person could actually do in the scene.
-8. Write 50-100 words of narrative, then end with exactly 3 choices in this format:
+7. NO FABRICATION. Do not invent backstory, prior injuries, body parts that aren't there, or items the player isn't carrying ("pack" line is the source of truth). Do not invent a different location, weather, or time of day than the Scene line says. If you can't ground a detail in the prompt, leave it out.
+8. Choices must be realistic actions a person could actually do in the scene.
+9. Write 50-100 words of narrative, then end with exactly 3 choices in this format:
 
 [A] action
 [B] action
@@ -1190,8 +1191,9 @@ SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称（"你
 4. 用"你"称呼玩家，绝对不要用"玩家"或名字。全程保持第二人称。
 5. 描写玩家看到、听到、摸到的具体事物——具体的物件、声响、质感——不要空泛的气氛描写。
 6. 不要假设玩家拿起或使用行动中没提到的东西。选项应该是"搜索""前往""躲藏""交谈"等动作，不要写"拿起X"。
-7. 选项必须是场景中一个人真的能做的合理行动。
-8. 写50-100字叙事，然后给恰好3个选项，格式如下：
+7. 不要凭空捏造。不要发明玩家不存在的过往（"逃亡中被铁门压坏"之类）、不存在的伤（"溃烂的脚趾"）、不在背包里的物品（背包行就是真相）；不要把场景换成别处的地点、天气、时段——只能写「场景」行说的那个地点。任何细节如果不能从 prompt 里找到依据，就不要写。
+8. 选项必须是场景中一个人真的能做的合理行动。
+9. 写50-100字叙事，然后给恰好3个选项，格式如下：
 
 [A] 行动
 [B] 行动
@@ -2830,9 +2832,31 @@ class DeadStaticGame:
         zh_lang = Config.LANG == "zh"
 
         # Combat detection
-        combat_keywords = ["fight", "attack", "kill", "shoot", "swing", "stab", "confront", "charge",
-                           "战斗", "攻击", "杀", "射击", "开枪", "刺", "砍", "冲", "举起武器", "武器"]
-        if any(kw in chosen_action.lower() for kw in combat_keywords):
+        # Combat keywords: prefer multi-char patterns to avoid false positives.
+        # Single-char "冲" matched "冲向出口" (escape) — was triggering bogus
+        # combat. Single-char "刺" matched "刺耳" (sharp sound). "武器" alone
+        # matched any narrative just mentioning a weapon. Keep entries with
+        # clear violent intent only.
+        combat_keywords = [
+            "fight", "attack", "kill", "shoot", "swing", "stab the",
+            "charge at", "charge it", "charge the", "lunge at",
+            # Chinese — clear violent intent verbs/phrases
+            "战斗", "攻击", "袭击", "杀", "射击", "开枪", "搏斗", "厮杀",
+            "进攻", "迎战", "硬碰硬", "挥刀", "挥舞", "举刀", "举起武器",
+            "拔刀", "砍", "捅", "刺向", "刺死", "刺穿",
+        ]
+        # Combat-trigger override: even if a movement verb like 冲 appears,
+        # require it to be paired with a hostile target word.
+        action_low = chosen_action.lower()
+        is_combat = any(kw in action_low for kw in combat_keywords)
+        if not is_combat:
+            charge_pairs = [("冲", "丧尸"), ("冲", "敌"), ("冲", "怪物"),
+                            ("冲", "尸"), ("冲", "它"), ("冲", "他")]
+            for verb, target in charge_pairs:
+                if verb in chosen_action and target in chosen_action:
+                    is_combat = True
+                    break
+        if is_combat:
             result = self.rules.resolve_combat(self.state.player, self.state.world.threat_level)
             hint = result.get("narrative_hint_zh") if zh_lang else result["narrative_hint"]
             extra_context.append(f"[Combat: {result['outcome']}. {hint}]")

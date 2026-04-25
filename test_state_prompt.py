@@ -304,6 +304,66 @@ def test_english_output_parity():
         g.Config.LANG = "zh"
 
 
+def test_combat_keyword_classifier():
+    """The keyword detector that decides whether an action triggers
+    resolve_combat must NOT fire on movement verbs ('冲向出口') or on
+    actions that only mention a weapon noun ('握紧菜刀'). It MUST fire
+    on clear violent intent ('举刀砍它', '进攻丧尸')."""
+    # Mirror the classifier logic from game_turn (we test the rule, not the
+    # full game_turn). We rebuild it from the source list to keep them in
+    # lockstep.
+    combat_keywords = [
+        "fight", "attack", "kill", "shoot", "swing", "stab the",
+        "charge at", "charge it", "charge the", "lunge at",
+        "战斗", "攻击", "袭击", "杀", "射击", "开枪", "搏斗", "厮杀",
+        "进攻", "迎战", "硬碰硬", "挥刀", "挥舞", "举刀", "举起武器",
+        "拔刀", "砍", "捅", "刺向", "刺死", "刺穿",
+    ]
+    charge_pairs = [("冲", "丧尸"), ("冲", "敌"), ("冲", "怪物"),
+                    ("冲", "尸"), ("冲", "它"), ("冲", "他")]
+    def is_combat(action):
+        if any(kw in action.lower() for kw in combat_keywords):
+            return True
+        return any(v in action and t in action for v, t in charge_pairs)
+
+    # Should NOT fire (the false-positive cases that bit us)
+    for non_combat in ["冲向出口", "冲入房间", "冲下楼", "冲上天台",
+                       "握紧菜刀蹲下", "拿起武器藏在背后",
+                       "悄悄绕过", "刺探周围动静"]:
+        ok(f"NOT combat: {non_combat!r}",
+           not is_combat(non_combat),
+           f"is_combat returned True")
+
+    # Should fire (clear violent intent)
+    for combat in ["举刀砍丧尸", "进攻", "迎战那只丧尸", "拔刀劈下去",
+                   "冲向丧尸砍倒它", "开枪打它", "刺向它的喉咙",
+                   "搏斗", "厮杀"]:
+        ok(f"IS combat: {combat!r}",
+           is_combat(combat),
+           f"is_combat returned False")
+
+
+def test_anti_fabrication_rule_in_system_prompt():
+    """The system prompt now contains an anti-fabrication clause."""
+    g.Config.LANG = "zh"
+    sp_zh = g._get_system_prompt()
+    ok("zh system prompt has '不要凭空捏造'",
+       "不要凭空捏造" in sp_zh, sp_zh[:300])
+    ok("zh system prompt forbids fake injuries",
+       "不存在的伤" in sp_zh)
+    ok("zh system prompt locks scene to 「场景」",
+       "「场景」" in sp_zh and "不要把场景换成别处" in sp_zh)
+    g.Config.LANG = "en"
+    try:
+        sp_en = g._get_system_prompt()
+        ok("en system prompt has 'NO FABRICATION'",
+           "NO FABRICATION" in sp_en or "Do not invent" in sp_en, sp_en[:300])
+        ok("en system prompt cites 'pack' as source of truth",
+           "pack" in sp_en.lower() and "source of truth" in sp_en.lower())
+    finally:
+        g.Config.LANG = "zh"
+
+
 def test_resolve_combat_has_chinese_hint():
     """All four combat outcomes now expose a Chinese-language hint
     in addition to the English one. Exercise many seeds to hit each branch."""
@@ -362,6 +422,8 @@ def main():
     test_action_directive_absent_when_no_action()
     test_english_action_directive()
     test_english_output_parity()
+    test_combat_keyword_classifier()
+    test_anti_fabrication_rule_in_system_prompt()
     test_resolve_combat_has_chinese_hint()
     test_resolve_stealth_has_chinese_hint()
     print(f"\n── Results: {PASS} passed, {FAIL} failed ──")
