@@ -40,7 +40,7 @@ python game.py
 
 On first launch, the game automatically downloads:
 1. **llama-server** (~200 MB, CUDA or CPU build auto-detected)
-2. **AI model** (~1.2 GB, Q4_K_M quantized GGUF)
+2. **AI model** (~1.4 GB, Q5_K_M quantized GGUF)
 
 After that, no internet is needed.
 
@@ -73,7 +73,7 @@ Player Input
 
 The game starts `llama-server.exe` as a background subprocess and communicates via its OpenAI-compatible HTTP API. The server auto-shuts down when the game exits. NVIDIA GPUs are auto-detected for CUDA acceleration; CPU mode works fine too.
 
-**Model:** [Josiefied-Qwen3-1.7B-abliterated-v1](https://huggingface.co/mradermacher/Josiefied-Qwen3-1.7B-abliterated-v1-GGUF) (Q4_K_M quantization, 1.2 GB)
+**Model:** [Josiefied-Qwen3-1.7B-abliterated-v1](https://huggingface.co/mradermacher/Josiefied-Qwen3-1.7B-abliterated-v1-GGUF) (Q5_K_M quantization, 1.4 GB)
 
 ### Episodic Memory (RAG)
 
@@ -183,7 +183,7 @@ release/DeadStatic/
   runtime/
     llama-server.exe    + CUDA DLLs
   models/
-    *.Q4_K_M.gguf       (~1.2 GB)
+    *.Q5_K_M.gguf       (~1.4 GB)
   Play DeadStatic.bat
   README.txt
 ```
@@ -203,7 +203,7 @@ All settings are in the `Config` class at the top of `game.py`:
 ```python
 class Config:
     HF_REPO_ID = "mradermacher/Josiefied-Qwen3-1.7B-abliterated-v1-GGUF"
-    GGUF_FILENAME = "Josiefied-Qwen3-1.7B-abliterated-v1.Q4_K_M.gguf"
+    GGUF_FILENAME = "Josiefied-Qwen3-1.7B-abliterated-v1.Q5_K_M.gguf"
     N_CTX = 4096              # context window size
     N_GPU_LAYERS = 99         # layers to offload to GPU
     SERVER_PORT = 8384        # local server port
@@ -216,8 +216,8 @@ class Config:
 | File | Size | Notes |
 |------|------|-------|
 | `...Q3_K_M.gguf` | 1.0 GB | Smallest practical. |
-| `...Q4_K_M.gguf` | 1.2 GB | Default. Good speed/quality balance. |
-| `...Q5_K_M.gguf` | 1.4 GB | Better quality. |
+| `...Q4_K_M.gguf` | 1.2 GB | Faster, smaller. |
+| `...Q5_K_M.gguf` | 1.4 GB | Default. Better quality at modest size bump. |
 | `...Q6_K.gguf`   | 1.5 GB | Higher quality. |
 | `...Q8_0.gguf`   | 1.9 GB | Near-lossless. |
 

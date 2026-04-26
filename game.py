@@ -113,7 +113,7 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 class Config:
     # GGUF model settings
     HF_REPO_ID = "mradermacher/Josiefied-Qwen3-1.7B-abliterated-v1-GGUF"
-    GGUF_FILENAME = "Josiefied-Qwen3-1.7B-abliterated-v1.Q4_K_M.gguf"
+    GGUF_FILENAME = "Josiefied-Qwen3-1.7B-abliterated-v1.Q5_K_M.gguf"
     MODEL_DIR = os.path.join(_BASE_DIR, "models")
     GGUF_MODEL_PATH = os.path.join(MODEL_DIR, GGUF_FILENAME)
 
@@ -137,7 +137,7 @@ class Config:
     # Game settings
     SAVE_FILE = "dead_static_save.json"
     MAX_HISTORY = 8
-    LLM_MAX_TOKENS = 400
+    LLM_MAX_TOKENS = 500
     LLM_TEMPERATURE = 0.7
     LLM_TOP_P = 0.9
 
@@ -1176,7 +1176,7 @@ RULES:
 6. NO FABRICATION. Do not invent backstory, prior injuries, body parts that aren't there, or items the player isn't carrying (the pack line is the source of truth). Do not invent a different location, weather, or time of day. If you can't ground a detail in the prompt, leave it out.
 7. Do NOT quote these rules back inside the narrative. Don't write "you must choose", don't paste prompt labels ("Event:", "Scene:", "Your action:"), don't repeat directive examples ("the body's position on the ground" etc.) verbatim. The rules are for you, not the reader.
 8. Three choices must be clearly DIFFERENT actions (different verb, different target, different method), each ≤15 words, action only — no consequences, no dialogue, no quotes, no inner feelings. Bad: 'push the door open, but fail and collapse' (consequence); 'shout "help!"' (dialogue). Good: 'push the door open' / 'cut the rope' / 'hide behind the cabinet'.
-9. Write 70–110 words of narrative first (don't skip; cover the action's result, the event's impact, and one or two concrete sensory beats so the ending lands on a real choice point instead of a hard cut). Then on a new line give the 3 options. Do NOT add transitions like "you must decide". Format:
+9. Narrative length: minimum 80 words, aim for ~100. Anything shorter is too short — expand it. Typical structure: 1–2 sentences executing the action (hands, feet, eyes), 1–2 sentences showing the event landing (sound, shadow, other party's move), 1–2 sentences with concrete sensory beats (a streak of light, a smear of blood, a smell). Then on a new line give the 3 options. Do NOT add transitions like "you must decide". Format:
 
 [A] action
 [B] action
@@ -1193,7 +1193,7 @@ SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称（"你
 6. 不要凭空捏造。不要发明背景（之前怎么受伤、从哪逃来）、不存在的伤、不在背包里的物品（背包行是真相）、当前场景之外的地点/天气/时段。任何不能从 prompt 里找到的细节都不要写。
 7. 不要把这些规则的文字搬进叙述本身。比如不要写"你必须做出选择"，不要把任何 prompt 里的指令、举例（"敌人倒下的姿势"之类）、标签（"事件:""场景:""你的行动:"）原样搬进叙事。规则是给你看的，叙述里只能出现场景里真实发生的事。
 8. 选项必须三个明显不同的动作（不同动作、不同目标、不同方法），每个 ≤15 字，只写"做什么"——不要带"却""但"再接后果，不要带引号台词，不要带感受。坏例子：'推开门，却因体力不足而倒地'（带后果）；'喊"救命"'（带台词）。好例子：'推开门'/'砍断绳子'/'躲到柜子后'。
-9. 先写 120–180 字叙事（必须写，不能省略；叙事要把行动结果、事件影响、一两个具体感官细节都展开够，让结尾自然停在一个选择关头，而不是匆匆收尾）。叙事写完后直接换行给 3 个选项，不要加"你必须做出选择"之类的过渡句。格式如下：
+9. 叙事字数：至少 130 字，目标 150 字左右——少于这个数说明你写得太短了，必须扩展。结构通常是：第 1–2 句写行动的身体执行（手、脚、眼睛在做什么）；第 3–4 句写事件如何介入（声音、影子、对方动作）；第 5–6 句写一两个具体感官细节（一道光、一摊血、一种气味、一个画面）。叙事写完直接换行给 3 个选项，不要加"你必须做出选择"之类的过渡句。格式如下：
 
 [A] 行动
 [B] 行动
@@ -1337,7 +1337,7 @@ def build_prompt(state: GameState, event: dict,
     lines = []
     if zh:
         # Labels intentionally start with "你的" instead of "玩家".
-        # Stronger instruction-following models (Q4_K_M+) treat the prompt's
+        # Stronger instruction-following quants (Q4_K_M and up) treat the prompt's
         # protagonist label as the canonical name and parrot it back into
         # the narrative. "玩家行动:" → narrator writes "玩家的手在颤抖".
         # Putting "你" up front so the model copies "你" instead.
@@ -1392,7 +1392,7 @@ def build_prompt(state: GameState, event: dict,
                 )
         # Universal closing rule — placed last so it's the closest to the
         # generation point. Strict 「你」-only + don't-pre-decide + no filler.
-        # Don't include a "good ending" example phrase — Q4_K_M copies it
+        # Don't include a "good ending" example phrase — small k-quants copy it
         # verbatim. Negative examples are safer because the model is told
         # NOT to use them.
         lines.append(
@@ -1404,6 +1404,8 @@ def build_prompt(state: GameState, event: dict,
             "「你必须做出选择…」、「你只能选择…」、「你没有选择，只有…」、"
             "「仿佛在催促你做出选择」、列举三个候选动作再换行给 [A][B][C]。"
             "用具体的画面收尾，让读者自己感觉到该选了。"
+            "(4) 叙事至少 130 个汉字（不含选项）——明显短于这个长度就是写得太短，"
+            "请把行动、事件、感官细节都展开。"
         )
     else:
         # Same rationale as the zh block: avoid "Player" as a label that
@@ -1465,7 +1467,9 @@ def build_prompt(state: GameState, event: dict,
             "question. NOT a comment. NOT a prompt to choose. ALL of these endings "
             "are forbidden: 'You must choose...', 'You have no choice but to...', "
             "'as if asking you to decide', listing the three candidate actions "
-            "before [A][B][C]. End on imagery so the reader feels the choice."
+            "before [A][B][C]. End on imagery so the reader feels the choice. "
+            "(4) Narrative is at least 80 words (not counting options) — expand "
+            "if shorter."
         )
 
     return "\n".join(lines)
@@ -1576,7 +1580,7 @@ class RuntimeManager:
     @staticmethod
     def download_model(console=None) -> bool:
         """Download the GGUF model from HuggingFace."""
-        _print_msg(console, f"Downloading AI model: {Config.GGUF_FILENAME} (~1.2 GB)...", "bold yellow")
+        _print_msg(console, f"Downloading AI model: {Config.GGUF_FILENAME} (~1.4 GB)...", "bold yellow")
         try:
             from huggingface_hub import hf_hub_download
             os.makedirs(Config.MODEL_DIR, exist_ok=True)
