@@ -24,6 +24,14 @@ if os.name == "nt":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    # Ensure stdin reads UTF-8 too — without this, typing CJK item names
+    # (e.g. `equip 菜刀`) on Windows comes back as mojibake under the
+    # console default codepage, and _item_key_from_input never matches.
+    if hasattr(sys.stdin, "reconfigure"):
+        try:
+            sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     # Set console font to one that supports CJK characters
     try:
@@ -140,6 +148,12 @@ class Config:
     LLM_MAX_TOKENS = 500
     LLM_TEMPERATURE = 0.7
     LLM_TOP_P = 0.9
+    # Repetition control — without this, 1.7B Q5 falls into 2-sentence loops
+    # ("你没有选择，只有 X。你 Y。你没有选择，只有 X。你 Y.") when it stalls,
+    # and produces three identical [A]/[B]/[C] options. 1.10–1.15 is the
+    # llama-server default range that's gentle enough to not break flow.
+    LLM_REPEAT_PENALTY = 1.12
+    LLM_REPEAT_LAST_N = 256
 
     # Language: "en" or "zh"
     LANG = "en"
@@ -219,9 +233,9 @@ _TEXTS = {
         ),
     },
     "You find nearby:": {"zh": "你在附近找到了:"},
+    "Equipped:": {"zh": "已装备:"},
 
     # Settings
-    "(Q4 quantized)": {"zh": "(Q4量化)"},
     "[1] Run diagnostics": {"zh": "[1] 运行诊断"},
     "[2] Re-download model & runtime": {"zh": "[2] 重新下载模型和运行时"},
     "[3] Language: {lang}": {"zh": "[3] 语言: {lang}"},
@@ -1173,7 +1187,7 @@ RULES:
 3. The event complicates the action. It does not replace it.
 4. Second person — only "you". Never "I", "the player", "they", "he/she", or a name.
 5. Describe concrete things — objects, sounds, textures. Avoid vague atmosphere.
-6. NO FABRICATION. Do not invent backstory, prior injuries, body parts that aren't there, or items the player isn't carrying (the pack line is the source of truth). Do not invent a different location, weather, or time of day. If you can't ground a detail in the prompt, leave it out.
+6. NO FABRICATION. Do not invent backstory, prior injuries, body parts that aren't there, or items the player isn't carrying (the pack line is the source of truth). Do not invent a different location, weather, or time of day. If you can't ground a detail in the prompt, leave it out. Indoor scenes (apartment, shop, hospital, basement, police station) are not directly rained or snowed on — weather only reaches the player indirectly through windows, roof leaks, or doors.
 7. Do NOT quote these rules back inside the narrative. Don't write "you must choose", don't paste prompt labels ("Event:", "Scene:", "Your action:"), don't repeat directive examples ("the body's position on the ground" etc.) verbatim. The rules are for you, not the reader.
 8. Three choices must be clearly DIFFERENT actions (different verb, different target, different method), each ≤15 words, action only — no consequences, no dialogue, no quotes, no inner feelings. Bad: 'push the door open, but fail and collapse' (consequence); 'shout "help!"' (dialogue). Good: 'push the door open' / 'cut the rope' / 'hide behind the cabinet'.
 9. Narrative length: minimum 80 words, aim for ~100. Anything shorter is too short — expand it. Typical structure: 1–2 sentences executing the action (hands, feet, eyes), 1–2 sentences showing the event landing (sound, shadow, other party's move), 1–2 sentences with concrete sensory beats (a streak of light, a smear of blood, a smell). Then on a new line give the 3 options. Do NOT add transitions like "you must decide". Format:
@@ -1190,7 +1204,7 @@ SYSTEM_PROMPT_ZH = """你是丧尸文字冒险的叙事者。第二人称（"你
 3. 事件让行动更复杂、更危险，但不能取代行动。
 4. 第二人称——只用"你"。不要出现"玩家""主角""他""她""我"或名字。
 5. 描写具体事物——物件、声响、质感——不要空泛气氛。
-6. 不要凭空捏造。不要发明背景（之前怎么受伤、从哪逃来）、不存在的伤、不在背包里的物品（背包行是真相）、当前场景之外的地点/天气/时段。任何不能从 prompt 里找到的细节都不要写。
+6. 不要凭空捏造。不要发明背景（之前怎么受伤、从哪逃来）、不存在的伤、不在背包里的物品（背包行是真相）、当前场景之外的地点/天气/时段。任何不能从 prompt 里找到的细节都不要写。室内场景（公寓、商店、医院、地下室、警察局之类）不会被雨水或风直接打到玩家身上——天气最多透过窗户、屋顶漏点、门缝间接呈现。
 7. 不要把这些规则的文字搬进叙述本身。比如不要写"你必须做出选择"，不要把任何 prompt 里的指令、举例（"敌人倒下的姿势"之类）、标签（"事件:""场景:""你的行动:"）原样搬进叙事。规则是给你看的，叙述里只能出现场景里真实发生的事。
 8. 选项必须三个明显不同的动作（不同动作、不同目标、不同方法），每个 ≤15 字，只写"做什么"——不要带"却""但"再接后果，不要带引号台词，不要带感受。坏例子：'推开门，却因体力不足而倒地'（带后果）；'喊"救命"'（带台词）。好例子：'推开门'/'砍断绳子'/'躲到柜子后'。
 9. 叙事字数：至少 130 字，目标 150 字左右——少于这个数说明你写得太短了，必须扩展。结构通常是：第 1–2 句写行动的身体执行（手、脚、眼睛在做什么）；第 3–4 句写事件如何介入（声音、影子、对方动作）；第 5–6 句写一两个具体感官细节（一道光、一摊血、一种气味、一个画面）。叙事写完直接换行给 3 个选项，不要加"你必须做出选择"之类的过渡句。格式如下：
@@ -1402,6 +1416,7 @@ def build_prompt(state: GameState, event: dict,
             "触感、一道血迹、一个倒下的影子），不可以是设问、不可以是评论、"
             "不可以提示玩家去选。以下结尾全部禁止："
             "「你必须做出选择…」、「你只能选择…」、「你没有选择，只有…」、"
+            "「唯一的选择是…」、「最终，你选择了…」、「你深知…」、"
             "「仿佛在催促你做出选择」、列举三个候选动作再换行给 [A][B][C]。"
             "用具体的画面收尾，让读者自己感觉到该选了。"
             "(4) 叙事至少 130 个汉字（不含选项）——明显短于这个长度就是写得太短，"
@@ -1466,8 +1481,9 @@ def build_prompt(state: GameState, event: dict,
             "texture, a smear of blood, a fallen shadow). NOT a rhetorical "
             "question. NOT a comment. NOT a prompt to choose. ALL of these endings "
             "are forbidden: 'You must choose...', 'You have no choice but to...', "
-            "'as if asking you to decide', listing the three candidate actions "
-            "before [A][B][C]. End on imagery so the reader feels the choice. "
+            "'The only option is...', 'Finally you chose to...', 'You know "
+            "that...', 'as if asking you to decide', listing the three candidate "
+            "actions before [A][B][C]. End on imagery so the reader feels the choice. "
             "(4) Narrative is at least 80 words (not counting options) — expand "
             "if shorter."
         )
@@ -1742,6 +1758,8 @@ class LLMClient:
             "max_tokens": Config.LLM_MAX_TOKENS,
             "temperature": Config.LLM_TEMPERATURE,
             "top_p": Config.LLM_TOP_P,
+            "repeat_penalty": Config.LLM_REPEAT_PENALTY,
+            "repeat_last_n": Config.LLM_REPEAT_LAST_N,
         }
         if stream:
             payload["stream"] = True
@@ -1887,7 +1905,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
         for key, val in matches:
             options[key.upper().strip()] = _clean_choice(val)
         narrative = re.split(r'\[[A-Da-d]\]', raw)[0].strip()
-        return {"narrative": narrative, "options": options, "parse_failed": False}
+        return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── Strategy 2: **[A]** or **A** (markdown bold brackets) ──
     pattern2 = r'\*\*\[?([A-Da-d])\]?\*\*[:\s]*(.+?)(?=\*\*\[?[A-Da-d]\]?\*\*|$)'
@@ -1896,7 +1915,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
         for key, val in matches:
             options[key.upper().strip()] = _clean_choice(val)
         narrative = re.split(r'\*\*\[?[A-Da-d]\]?\*\*', raw)[0].strip()
-        return {"narrative": narrative, "options": options, "parse_failed": False}
+        return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── Strategy 3: A) text / B) text / C) text ──
     pattern3 = r'(?:^|\n)\s*([A-Da-d])\)\s*(.+?)(?=(?:^|\n)\s*[A-Da-d]\)|$)'
@@ -1905,7 +1925,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
         for key, val in matches:
             options[key.upper().strip()] = _clean_choice(val)
         narrative = re.split(r'(?:^|\n)\s*[A-Da-d]\)', raw)[0].strip()
-        return {"narrative": narrative, "options": options, "parse_failed": False}
+        return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── Strategy 4: A. text / B. text / C. text ──
     pattern4 = r'(?:^|\n)\s*([A-Da-d])\.\s+(.+?)(?=(?:^|\n)\s*[A-Da-d]\.\s|$)'
@@ -1914,7 +1935,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
         for key, val in matches:
             options[key.upper().strip()] = _clean_choice(val)
         narrative = re.split(r'(?:^|\n)\s*[A-Da-d]\.\s', raw)[0].strip()
-        return {"narrative": narrative, "options": options, "parse_failed": False}
+        return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── Strategy 5: A: text / B: text  or  Option A: text ──
     pattern5 = r'(?:^|\n)\s*(?:Option\s+)?([A-Da-d])[:\-]\s*(.+?)(?=(?:^|\n)\s*(?:Option\s+)?[A-Da-d][:\-]|$)'
@@ -1923,7 +1945,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
         for key, val in matches:
             options[key.upper().strip()] = _clean_choice(val)
         narrative = re.split(r'(?:^|\n)\s*(?:Option\s+)?[A-Da-d][:\-]', raw, flags=re.IGNORECASE)[0].strip()
-        return {"narrative": narrative, "options": options, "parse_failed": False}
+        return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── Strategy 6: Numbered list  1. / 1) / 1: ──
     pattern6 = r'(?:^|\n)\s*([1-4])[.):\-]\s*(.+?)(?=(?:^|\n)\s*[1-4][.):\-]|$)'
@@ -1933,7 +1956,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
         for i, (_, val) in enumerate(matches[:4]):
             options[labels[i]] = _clean_choice(val)
         narrative = re.split(r'(?:^|\n)\s*[1-4][.):\-]', raw)[0].strip()
-        return {"narrative": narrative, "options": options, "parse_failed": False}
+        return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── Strategy 7: Bullet points  - text / * text (last 3+ bullets) ──
     bullet_pattern = r'(?:^|\n)\s*[-*•]\s+(.+)'
@@ -1953,7 +1977,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
             last_bullet = max(search_area.rfind('\n-'), search_area.rfind('\n*'), search_area.rfind('\n•'))
             if last_bullet > 0:
                 narrative = raw[:last_bullet].strip()
-        return {"narrative": narrative, "options": options, "parse_failed": False}
+        return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── Strategy 8: Last resort — look for any action-like sentences at the end ──
     lines = [l.strip() for l in raw.strip().split('\n') if l.strip()]
@@ -1970,7 +1995,8 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
                     options[labels[i]] = _clean_choice(cleaned)
             if len(options) >= 2:
                 narrative = '\n'.join(lines[:-3]).strip()
-                return {"narrative": narrative, "options": options, "parse_failed": False}
+                return {"narrative": narrative, "options": options,
+                "parse_failed": _options_are_degenerate(options)}
 
     # ── All strategies failed → use fallback choices ──
     return {
@@ -1978,6 +2004,24 @@ def parse_llm_output(raw: str, state: GameState = None) -> dict:
         "options": _generate_fallback_choices(state),
         "parse_failed": True,
     }
+
+
+def _options_are_degenerate(options: dict) -> bool:
+    """Three identical or near-identical options — model collapsed.
+    Treat as parse failure so the repair pass can re-roll."""
+    if len(options) < 2:
+        return False
+    vals = [v.strip() for v in options.values() if v]
+    if len(vals) < 2:
+        return False
+    # Exact duplicate detection
+    if len(set(vals)) == 1:
+        return True
+    # First-10-char duplicates (loose match for slight punctuation drift)
+    heads = [v[:10] for v in vals]
+    if len(set(heads)) == 1:
+        return True
+    return False
 
 
 def _clean_choice(text: str) -> str:
@@ -2498,6 +2542,25 @@ class DeadStaticGame:
         self.state.player.inventory = starter_items
         self.display.print_system_message(f"{t('You find nearby:')} {', '.join(_item_name(i) for i in starter_items)}")
 
+        # Auto-equip the best starting weapon if one rolled in. Without this
+        # the status bar reads 🔪 赤手空拳 ("bare hands") even though there's
+        # a knife sitting in the pack — the player has to manually `equip`
+        # before swinging at anything, and the narrator gets confused too.
+        best_weapon = None
+        best_dmg = -1
+        for it in starter_items:
+            entry = ITEMS.get(it, {})
+            if entry.get("type") == "weapon":
+                dmg = entry.get("damage", 0)
+                if dmg > best_dmg:
+                    best_dmg = dmg
+                    best_weapon = it
+        if best_weapon:
+            self.state.player.equipped_weapon = best_weapon
+            self.display.print_system_message(
+                f"{t('Equipped:')} {_item_name(best_weapon)}"
+            )
+
         input(f"\n  {t('Press Enter to begin...')}")
 
     def settings_menu(self):
@@ -2505,7 +2568,18 @@ class DeadStaticGame:
             self.display.clear()
             lang_display = "中文" if Config.LANG == "zh" else "English"
             print(f"\n  ── {t('Settings')} ──")
-            print(f"\n  Model: {Config.GGUF_FILENAME} {t('(Q4 quantized)')}")
+            # Pick the human-readable quant tag straight from the filename
+            # (Q4_K_M / Q5_K_M / Q6_K / etc.) instead of a hard-coded label.
+            quant_tag = ""
+            for q in ("Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "IQ4_XS",
+                      "Q4_K_M", "Q4_K_S", "Q4_0", "Q5_K_S", "Q5_K_M",
+                      "Q6_K", "Q8_0", "F16", "f16"):
+                if q in Config.GGUF_FILENAME:
+                    quant_tag = q.upper()
+                    break
+            quant_word = "量化" if Config.LANG == "zh" else "quantized"
+            quant_label = f" ({quant_tag} {quant_word})" if quant_tag else ""
+            print(f"\n  Model: {Config.GGUF_FILENAME}{quant_label}")
             print(f"  Server: llama-server ({Config.LLAMA_CPP_VERSION})")
             model_status = f"✓ Downloaded ({RuntimeManager.get_model_size_str()})" if RuntimeManager.is_model_downloaded() else "✗ Not downloaded"
             server_status = "✓ Installed" if RuntimeManager.is_server_installed() else "✗ Not installed"

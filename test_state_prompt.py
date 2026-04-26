@@ -525,6 +525,58 @@ def test_resolve_stealth_has_chinese_hint():
        len(seen) >= 2, f"seen={seen}")
 
 
+def test_options_degenerate_detector():
+    """Three identical or first-10-char-identical options → flagged as
+    degenerate parse so the repair pass fires."""
+    f = g._options_are_degenerate
+    ok("3 identical options → degenerate",
+       f({"A": "拿绷带", "B": "拿绷带", "C": "拿绷带"}) is True)
+    ok("3 head-identical options → degenerate",
+       f({"A": "拿起脏绷带，试图擦拭布料",
+          "B": "拿起脏绷带，试图擦拭墙壁",
+          "C": "拿起脏绷带，试图擦拭门板"}) is True)
+    ok("3 distinct options → healthy",
+       f({"A": "砍丧尸", "B": "躲到柜子后", "C": "喝水"}) is False)
+    ok("empty options → not degenerate",
+       f({}) is False)
+    ok("single option → not degenerate (caller decides)",
+       f({"A": "X"}) is False)
+
+
+def test_indoor_weather_clause_in_system_prompt():
+    """Live-play exposed 'rain hitting player inside the apartment'
+    issue. System prompt must explicitly cover indoor weather."""
+    g.Config.LANG = "zh"
+    sp = g._get_system_prompt()
+    ok("zh: indoor-weather clause present",
+       "室内场景" in sp and "不会被雨水或风直接打到" in sp,
+       sp[:1200])
+    g.Config.LANG = "en"
+    try:
+        sp_en = g._get_system_prompt()
+        ok("en: indoor-weather clause present",
+           "Indoor scenes" in sp_en and "not directly rained" in sp_en,
+           sp_en[:1200])
+    finally:
+        g.Config.LANG = "zh"
+
+
+def test_repeat_penalty_in_payload():
+    """The LLM payload must carry repeat_penalty / repeat_last_n.
+    Without these, Q5_K_M falls into 2-sentence loops and produces 3
+    identical options."""
+    client = g.LLMClient()
+    payload = client._build_payload("sys", "user")
+    ok("payload has repeat_penalty",
+       "repeat_penalty" in payload
+       and 1.0 < payload["repeat_penalty"] <= 1.5,
+       f"got {payload.get('repeat_penalty')}")
+    ok("payload has repeat_last_n",
+       "repeat_last_n" in payload
+       and payload["repeat_last_n"] >= 64,
+       f"got {payload.get('repeat_last_n')}")
+
+
 def main():
     test_healthy_state_minimal()
     test_graded_injury_numbers()
@@ -550,6 +602,9 @@ def main():
     test_anti_fabrication_rule_in_system_prompt()
     test_resolve_combat_has_chinese_hint()
     test_resolve_stealth_has_chinese_hint()
+    test_options_degenerate_detector()
+    test_indoor_weather_clause_in_system_prompt()
+    test_repeat_penalty_in_payload()
     print(f"\n── Results: {PASS} passed, {FAIL} failed ──")
     sys.exit(0 if FAIL == 0 else 1)
 
